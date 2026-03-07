@@ -30,3 +30,23 @@
     @apply bg-white/5 hover:bg-white/10 active:bg-white/5 border border-white/5 backdrop-blur-sm text-textMain rounded-md transition-all;
   }
 }
+
+/* Custom overwrites for ReactFlow Default UI (Un-purged) */
+.react-flow__controls {
+  @apply !bg-[#151C2C] !border !border-[#2A3441] !shadow-xl !rounded-lg !overflow-hidden flex flex-col items-center gap-0;
+}
+.react-flow__controls-button {
+  @apply !bg-[#151C2C] !border-b !border-[#2A3441] !w-8 !h-8 !p-1.5 flex items-center justify-center transition-colors;
+}
+.react-flow__controls-button:last-child {
+  @apply !border-none;
+}
+.react-flow__controls-button:hover {
+  @apply !bg-white/5;
+}
+.react-flow__controls-button svg {
+  @apply !fill-[#94A3B8] transition-colors w-full h-full;
+}
+.react-flow__controls-button:hover svg {
+  @apply !fill-[#EE4C2C];
+}

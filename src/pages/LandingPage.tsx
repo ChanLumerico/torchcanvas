@@ -48,7 +48,7 @@ export default function LandingPage({ onEnterWorkspace }: { onEnterWorkspace: ()
         <div className="flex items-center gap-4">
           <button 
             onClick={onEnterWorkspace}
-            className="px-8 py-4 bg-primary hover:bg-primaryHover text-white rounded-xl font-semibold transition-all shadow-[0_0_40px_-10px_rgba(238,76,44,0.6)] flex items-center gap-3 group"
+            className="px-8 py-4 bg-[#EE4C2C] hover:bg-[#D93B1F] text-white rounded-xl font-semibold transition-all shadow-[0_0_40px_-10px_rgba(238,76,44,0.6)] flex items-center gap-3 group"
           >
             Start Designing
             <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />

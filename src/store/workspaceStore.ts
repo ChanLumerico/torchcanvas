@@ -4,7 +4,18 @@ import type { Node, Edge as ReactFlowEdge, Connection, NodeChange, EdgeChange } 
 
 export type Edge = ReactFlowEdge;
 
-export type ModuleType = 'Input' | 'Conv2d' | 'Linear' | 'ReLU' | 'BatchNorm2d' | 'MaxPool2d' | 'Concat' | 'Output';
+export type ModuleType = 'Input' | 'Output' | 'Conv2d' | 'Linear' | 'ReLU' | 'BatchNorm2d' | 'MaxPool2d' | 'Concat';
+
+export const TYPE_COLORS: Record<ModuleType, string> = {
+  Input: '#10B981', // emerald-500
+  Output: '#F43F5E', // rose-500
+  Conv2d: '#F97316', // orange-500
+  Linear: '#EF4444', // red-500
+  ReLU: '#F59E0B', // amber-500
+  BatchNorm2d: '#A855F7', // purple-500
+  MaxPool2d: '#06B6D4', // cyan-500
+  Concat: '#D946EF', // fuchsia-500
+};
 
 export interface ModuleData {
   type: ModuleType;
@@ -47,8 +58,8 @@ const initialNodes: NetworkNode[] = [
 ];
 
 const initialEdges: Edge[] = [
-  { id: 'e1-2', source: '1', target: '2', animated: true, style: { stroke: '#EE4C2C', strokeWidth: 2 } },
-  { id: 'e2-3', source: '2', target: '3', animated: true, style: { stroke: '#EE4C2C', strokeWidth: 2 } },
+  { id: 'e1-2', source: '1', target: '2', type: 'smoothstep', animated: true, style: { stroke: '#EE4C2C', strokeWidth: 2 } },
+  { id: 'e2-3', source: '2', target: '3', type: 'smoothstep', animated: true, style: { stroke: '#EE4C2C', strokeWidth: 2 } },
 ];
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
@@ -66,8 +77,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     });
   },
   onConnect: (connection: Connection) => {
+    const nodes = get().nodes;
+    const sourceNode = nodes.find(n => n.id === connection.source) as NetworkNode;
+    const strokeColor = sourceNode ? TYPE_COLORS[sourceNode.data.type as ModuleType] : '#EE4C2C';
+    
     set({
-      edges: addEdge({ ...connection, animated: true, style: { stroke: '#EE4C2C', strokeWidth: 2 } }, get().edges),
+      edges: addEdge({ 
+        ...connection, 
+        type: 'smoothstep', 
+        animated: true, 
+        style: { stroke: strokeColor, strokeWidth: 2 } 
+      }, get().edges),
     });
   },
   addNode: (node) => {

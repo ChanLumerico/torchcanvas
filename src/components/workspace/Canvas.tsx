@@ -1,11 +1,12 @@
 import { useCallback, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import ReactFlow, { Background, Controls, ReactFlowProvider } from 'reactflow';
+import ReactFlow, { Background, Controls, MiniMap, ReactFlowProvider } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { useWorkspaceStore } from '../../store/workspaceStore';
+import { useWorkspaceStore, TYPE_COLORS } from '../../store/workspaceStore';
 import type { ModuleType, NetworkNode } from '../../store/workspaceStore';
 import ModuleNode from './ModuleNode';
+import Omnibar from './Omnibar';
 
 const nodeTypes = {
   moduleNode: ModuleNode,
@@ -17,6 +18,7 @@ const getId = () => `dndnode_${id++}`;
 function CanvasInner() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
+  const [omnibarPos, setOmnibarPos] = useState<{ x: number, y: number, flowX: number, flowY: number } | null>(null);
   
   const nodes = useWorkspaceStore((state) => state.nodes);
   const edges = useWorkspaceStore((state) => state.edges);
@@ -67,8 +69,49 @@ function CanvasInner() {
     }
   }, [setSelectedNode]);
 
+  const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    if (!reactFlowInstance) return;
+
+    const bounds = reactFlowWrapper.current?.getBoundingClientRect();
+    if (!bounds) return;
+
+    const position = reactFlowInstance.screenToFlowPosition({
+      x: event.clientX,
+      y: event.clientY,
+    });
+
+    setOmnibarPos({
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+      flowX: position.x,
+      flowY: position.y
+    });
+  }, [reactFlowInstance]);
+
+  const onOmnibarAdd = useCallback((type: ModuleType) => {
+    if (!omnibarPos) return;
+
+    const newNode: NetworkNode = {
+      id: getId(),
+      type: 'moduleNode',
+      position: { x: omnibarPos.flowX, y: omnibarPos.flowY },
+      data: { type, params: getDefaultParams(type) },
+    };
+
+    addNode(newNode);
+    setOmnibarPos(null);
+  }, [omnibarPos, addNode]);
+
   return (
-    <div className="flex-1 h-full w-full relative" ref={reactFlowWrapper}>
+    <div className="flex-1 h-full w-full relative" ref={reactFlowWrapper} onClick={() => setOmnibarPos(null)}>
+      {omnibarPos && (
+        <Omnibar 
+          position={{ x: omnibarPos.x, y: omnibarPos.y }} 
+          onSelect={onOmnibarAdd} 
+          onClose={() => setOmnibarPos(null)} 
+        />
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -79,11 +122,22 @@ function CanvasInner() {
         onDrop={onDrop}
         onDragOver={onDragOver}
         onSelectionChange={onSelectionChange}
+        onPaneContextMenu={onPaneContextMenu}
         nodeTypes={nodeTypes}
         fitView
       >
         <Background color="#ffffff" gap={24} size={1} style={{ opacity: 0.05 }} />
-        <Controls className="!bg-panel !border-border fill-white" />
+        <Controls 
+          className="bg-panel border-border shadow-2xl rounded-lg overflow-hidden flex flex-col items-center !m-4" 
+          showInteractive={false}
+          position="bottom-left"
+        />
+        <MiniMap 
+          className="!bg-panel !border-border !shadow-2xl rounded-xl overflow-hidden !m-4" 
+          style={{ width: 140, height: 100 }}
+          maskColor="rgba(0, 0, 0, 0.4)" 
+          nodeColor={(node: any) => TYPE_COLORS[node.data.type as ModuleType] || '#EE4C2C'} 
+        />
       </ReactFlow>
     </div>
   );

@@ -1,7 +1,10 @@
-import { useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 import type { NetworkNode, Edge } from '../../store/workspaceStore';
-import { Copy, Terminal } from 'lucide-react';
+import { Copy, Download, FileCode2, Play, Maximize2, Minimize2 } from 'lucide-react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import clsx from 'clsx';
 
 // Very basic topological sort for dummy code generation
 function generatePytorchCode(nodes: NetworkNode[], edges: Edge[]) {
@@ -68,7 +71,7 @@ class GeneratedModel(nn.Module):
 
     if (type === 'Input' || type === 'Output' || type === 'Concat') return; // Ignore pure routing/shapes for now
 
-    const args = Object.entries(params).map(([k, v]) => `${k}=${typeof v === 'string' ? v : v}`).join(', ');
+    const args = Object.entries(params).map(([k, v]) => `${k}=${typeof v === 'string' ? "'" + v + "'" : v}`).join(', ');
     const layerName = `self.layer${layerIdx}`;
     
     initCode += `        ${layerName} = nn.${type}(${args})\n`;
@@ -93,47 +96,153 @@ ${initCode}
 ${forwardCode}`;
 }
 
+function generateTrainTemplate() {
+  return `import torch
+import torch.nn as nn
+import torch.optim as optim
+from generated_model import GeneratedModel
+
+# 1. Initialize Model, Loss, and Optimizer
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = GeneratedModel().to(device)
+
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# 2. Dummy Training Loop
+def train():
+    model.train()
+    
+    # Dummy data
+    inputs = torch.randn(32, 3, 224, 224).to(device)
+    targets = torch.randint(0, 10, (32,)).to(device)
+    
+    optimizer.zero_grad()
+    outputs = model(inputs)
+    loss = criterion(outputs, targets)
+    
+    loss.backward()
+    optimizer.step()
+    
+    print(f"Training Loss: {loss.item():.4f}")
+
+if __name__ == "__main__":
+    train()`;
+}
+
+type TabType = 'model' | 'train';
+
 export default function CodePreview() {
   const nodes = useWorkspaceStore((state) => state.nodes);
   const edges = useWorkspaceStore((state) => state.edges);
+  const [activeTab, setActiveTab] = useState<TabType>('model');
+  const [isExpanded, setIsExpanded] = useState(false);
 
-  const generatedCode = useMemo(() => generatePytorchCode(nodes, edges), [nodes, edges]);
+  const modelCode = useMemo(() => generatePytorchCode(nodes, edges), [nodes, edges]);
+  const trainCode = useMemo(() => generateTrainTemplate(), []);
+
+  const activeCode = activeTab === 'model' ? modelCode : trainCode;
+  const activeFileName = activeTab === 'model' ? 'generated_model.py' : 'train.py';
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(generatedCode);
+    navigator.clipboard.writeText(activeCode);
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([activeCode], { type: 'text/x-python' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = activeFileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
-    <footer className="h-48 border-t border-border/80 bg-panel/95 font-mono text-xs overflow-hidden z-20 shadow-[0_-15px_40px_rgba(0,0,0,0.3)] flex flex-col">
-      <div className="flex items-center justify-between px-5 py-2 border-b border-border/40 bg-black/20 shrink-0">
-        <div className="flex items-center gap-2">
-          <Terminal className="w-4 h-4 text-primary" />
-          <span className="text-textMuted font-semibold">generated_model.py</span>
+    <footer 
+      className={clsx(
+        "border-t border-border/80 bg-[#1E1E1E] font-mono text-xs z-20 shadow-[0_-15px_40px_rgba(0,0,0,0.3)] flex flex-col transition-all duration-300 ease-in-out",
+        isExpanded ? "h-[60vh]" : "h-64"
+      )}
+    >
+      <div className="flex items-end justify-between px-2 pt-2 border-b border-border/40 bg-panel/40 shrink-0">
+        <div className="flex gap-1 items-end">
+          <button 
+            onClick={() => setActiveTab('model')}
+            className={clsx(
+              "px-4 py-2 flex items-center gap-2 rounded-t-lg transition-colors border-b-2",
+              activeTab === 'model' 
+                ? "bg-[#1E1E1E] text-white border-primary" 
+                : "text-textMuted hover:bg-white/5 border-transparent hover:text-white/80"
+            )}
+          >
+            <FileCode2 className={clsx("w-3.5 h-3.5", activeTab === 'model' ? "text-primary" : "text-textMuted/60")} />
+            model.py
+          </button>
+          <button 
+            onClick={() => setActiveTab('train')}
+            className={clsx(
+              "px-4 py-2 flex items-center gap-2 rounded-t-lg transition-colors border-b-2",
+              activeTab === 'train' 
+                ? "bg-[#1E1E1E] text-white border-primary" 
+                : "text-textMuted hover:bg-white/5 border-transparent hover:text-white/80"
+            )}
+          >
+            <Play className={clsx("w-3.5 h-3.5", activeTab === 'train' ? "text-green-400" : "text-textMuted/60")} />
+            train.py
+          </button>
         </div>
-        <button 
-          onClick={handleCopy}
-          className="flex items-center gap-1.5 text-textMuted hover:text-white transition-colors hover:bg-white/10 px-2.5 py-1.5 rounded-md"
-        >
-          <Copy className="w-3.5 h-3.5" />
-          Copy code
-        </button>
+        
+        <div className="flex items-center gap-1 pb-1.5 pr-2">
+          <button 
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 text-textMuted hover:text-white transition-colors hover:bg-white/10 px-2.5 py-1.5 rounded-md"
+            title="Copy Code"
+          >
+            <Copy className="w-3.5 h-3.5" />
+          </button>
+          <button 
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 text-textMuted hover:text-white transition-colors hover:bg-white/10 px-2.5 py-1.5 rounded-md"
+            title={`Download ${activeFileName}`}
+          >
+            <Download className="w-3.5 h-3.5" />
+          </button>
+          
+          <div className="w-px h-4 bg-border mx-1" />
+          
+          <button 
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="flex items-center gap-1.5 text-textMuted hover:text-white transition-colors hover:bg-white/10 px-2.5 py-1.5 rounded-md"
+            title={isExpanded ? "Collapse Code" : "Expand Code"}
+          >
+            {isExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          </button>
+        </div>
       </div>
-      <div className="p-5 overflow-y-auto flex-1 bg-[#090D14]">
-        <pre className="text-orange-300/90 leading-[1.6] font-mono whitespace-pre-wrap">
-          <code dangerouslySetInnerHTML={{ __html: highlightSyntax(generatedCode) }} />
-        </pre>
+      
+      <div className="flex-1 overflow-hidden relative">
+        <SyntaxHighlighter
+          language="python"
+          style={vscDarkPlus}
+          customStyle={{
+            margin: 0,
+            padding: '1.25rem',
+            background: 'transparent',
+            height: '100%',
+            overflowY: 'auto',
+            fontSize: '13px',
+            lineHeight: '1.6'
+          }}
+          codeTagProps={{
+            style: { fontFamily: "Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace" }
+          }}
+        >
+          {activeCode}
+        </SyntaxHighlighter>
       </div>
     </footer>
   );
-}
-
-// Ultra basic syntax highlighter for visualization
-function highlightSyntax(code: string) {
-  let hl = code
-    .replace(/(import|class|def|super|return)/g, '<span class="text-fuchsia-400 font-bold">$1</span>')
-    .replace(/(nn|torch|torch\.nn)/g, '<span class="text-teal-400">$1</span>')
-    .replace(/(self\.[\w]+)/g, '<span class="text-orange-300">$1</span>')
-    .replace(/(Conv2d|Linear|ReLU|BatchNorm2d|MaxPool2d)/g, '<span class="text-amber-300">$1</span>')
-    .replace(/(__init__|forward)/g, '<span class="text-orange-400">$1</span>');
-  return hl;
 }
