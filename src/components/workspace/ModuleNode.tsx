@@ -23,7 +23,7 @@ function ModuleNode({ data, selected }: NodeProps<ModuleData>) {
     <div 
       className={clsx(
         'min-w-[160px] rounded-xl border-2 shadow-lg backdrop-blur-md transition-all',
-        colorClass,
+        data.shapeError ? 'border-red-500 bg-red-500/10 text-red-400 shape-error-pulse' : colorClass,
         selected ? 'shadow-[0_0_20px_-3px_rgba(255,255,255,0.2)] scale-[1.02] border-opacity-100 z-50' : 'shadow-black/20'
       )}
     >
@@ -36,7 +36,7 @@ function ModuleNode({ data, selected }: NodeProps<ModuleData>) {
       </div>
       
       {Object.keys(data.params).length > 0 && (
-        <div className="p-3 bg-black/40 rounded-b-[10px] space-y-1">
+        <div className="p-3 bg-black/40 space-y-1">
           {Object.entries(data.params).map(([key, value]) => (
             <div key={key} className="flex justify-between items-center text-[10px] font-mono opacity-80">
               <span>{key}:</span>

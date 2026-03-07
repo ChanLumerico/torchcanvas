@@ -6,11 +6,44 @@ import clsx from 'clsx';
 
 const MODULES_CATEGORIES = [
   { category: 'Data', items: ['Input', 'Output'] },
-  { category: 'Convolutional', items: ['Conv2d'] },
-  { category: 'Linear', items: ['Linear'] },
-  { category: 'Activations', items: ['ReLU'] },
-  { category: 'Pooling', items: ['MaxPool2d'] },
-  { category: 'Normalization', items: ['BatchNorm2d'] },
+  { 
+    category: 'Convolutional', 
+    items: [
+      'Conv1d', 'Conv2d', 'Conv3d', 
+      'ConvTranspose1d', 'ConvTranspose2d', 'ConvTranspose3d'
+    ] 
+  },
+  { category: 'Linear', items: ['Linear', 'Bilinear'] },
+  { 
+    category: 'Activations', 
+    items: [
+      'ReLU', 'ReLU6', 'LeakyReLU', 'PReLU', 'ELU', 'SELU', 'GELU', 
+      'Sigmoid', 'Tanh', 'LogSoftmax', 'Softmax'
+    ] 
+  },
+  { 
+    category: 'Pooling', 
+    items: [
+      'MaxPool1d', 'MaxPool2d', 'MaxPool3d', 
+      'AvgPool1d', 'AvgPool2d', 'AvgPool3d', 
+      'AdaptiveAvgPool1d', 'AdaptiveAvgPool2d', 'AdaptiveAvgPool3d'
+    ] 
+  },
+  { 
+    category: 'Normalization', 
+    items: [
+      'BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 
+      'LayerNorm', 'GroupNorm', 
+      'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d'
+    ] 
+  },
+  { 
+    category: 'Utility', 
+    items: [
+      'Dropout', 'Dropout2d', 'Dropout3d', 'AlphaDropout', 
+      'Flatten', 'Unflatten', 'Upsample'
+    ] 
+  },
   { category: 'Merge', items: ['Concat'] },
 ] as const;
 

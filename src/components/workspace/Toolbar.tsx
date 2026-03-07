@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { Download, Save, Undo2, Redo2, PencilLine } from 'lucide-react';
-
+import { useWorkspaceStore } from '../../store/workspaceStore';
 
 export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => void }) {
-  const [projectName, setProjectName] = useState('Untitled Model');
+  const modelName = useWorkspaceStore((state) => state.modelName);
+  const setModelName = useWorkspaceStore((state) => state.setModelName);
+  
   const [isEditing, setIsEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -16,14 +18,14 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
 
   const handleRenameSubmit = () => {
     setIsEditing(false);
-    if (!projectName.trim()) setProjectName('Untitled Model');
+    if (!modelName.trim()) setModelName('GeneratedModel');
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleRenameSubmit();
     if (e.key === 'Escape') {
       setIsEditing(false);
-      setProjectName('Untitled Model'); // Extremely naive revert
+      if (!modelName.trim()) setModelName('GeneratedModel'); // basic fallback
     }
   };
 
@@ -41,8 +43,8 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
         {isEditing ? (
           <input 
             ref={inputRef}
-            value={projectName}
-            onChange={(e) => setProjectName(e.target.value)}
+            value={modelName}
+            onChange={(e) => setModelName(e.target.value)}
             onBlur={handleRenameSubmit}
             onKeyDown={handleKeyDown}
             className="text-sm font-semibold text-white tracking-wide bg-black/40 border border-primary/50 rounded px-2 py-0.5 focus:outline-none w-48"
@@ -52,7 +54,7 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
             onClick={() => setIsEditing(true)}
             className="group flex items-center gap-2 px-2 py-0.5 rounded hover:bg-white/5 transition-colors"
           >
-            <span className="text-sm font-semibold text-white tracking-wide">{projectName}</span>
+            <span className="text-sm font-semibold text-white tracking-wide">{modelName}</span>
             <PencilLine className="w-3 h-3 text-textMuted opacity-0 group-hover:opacity-100 transition-opacity" />
           </button>
         )}
