@@ -9,15 +9,13 @@ import { generatePytorchCode, generateTrainTemplate } from '../../compiler/pytor
 type TabType = 'model' | 'train';
 
 export default function CodePreview() {
-  const nodes = useWorkspaceStore((state) => state.nodes);
-  const edges = useWorkspaceStore((state) => state.edges);
-  const modelName = useWorkspaceStore((state) => state.modelName);
+  const graph = useWorkspaceStore((state) => state.graph);
   
   const [activeTab, setActiveTab] = useState<TabType>('model');
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const modelCode = useMemo(() => generatePytorchCode(nodes, edges, modelName), [nodes, edges, modelName]);
-  const trainCode = useMemo(() => generateTrainTemplate(modelName), [modelName]);
+  const modelCode = useMemo(() => generatePytorchCode(graph), [graph]);
+  const trainCode = useMemo(() => generateTrainTemplate(graph), [graph]);
 
   const activeCode = activeTab === 'model' ? modelCode : trainCode;
   const activeFileName = activeTab === 'model' ? 'generated_model.py' : 'train.py';

@@ -1,239 +1,331 @@
-import type { NetworkNode, Edge, ModuleType } from '../store/workspaceStore';
+import type { GraphModel, GraphNodePresentationMeta } from '../domain/graph/types';
+import { buildGraphIndex } from '../domain/graph/utils';
+import type { LayerParamValue, LayerParams, ModuleType } from '../domain/layers';
 
-export function inferShapes(nodes: NetworkNode[], edges: Edge[]): NetworkNode[] {
-  // Build connectivity set: all node IDs that participate in at least one edge
-  const connectedIds = new Set<string>();
-  edges.forEach(e => {
-    connectedIds.add(e.source);
-    connectedIds.add(e.target);
-  });
+type ShapeToken = string | number;
 
-  // Deep clone nodes to update shapes + connectivity
-  const updatedNodes: NetworkNode[] = nodes.map(n => ({
-    ...n,
-    data: {
-      ...n.data,
-      outputShape: undefined,
-      shapeError: false,
-      connected: connectedIds.has(n.id),
+export function inferGraphNodeMeta(graph: GraphModel): Record<string, GraphNodePresentationMeta> {
+  const index = buildGraphIndex(graph);
+  const metaByNodeId = Object.fromEntries(
+    graph.nodes.map((node) => [
+      node.id,
+      {
+        outputShape: undefined,
+        shapeError: false,
+        connected: index.connectedIds.has(node.id),
+      } satisfies GraphNodePresentationMeta,
+    ]),
+  ) as Record<string, GraphNodePresentationMeta>;
+
+  index.topologicalOrder.forEach((nodeId) => {
+    const node = index.nodeMap.get(nodeId);
+    if (!node) {
+      return;
     }
-  }));
-
-  const adjacencyList = new Map<string, string[]>();
-  const reverseList = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
-
-  updatedNodes.forEach(n => {
-    adjacencyList.set(n.id, []);
-    reverseList.set(n.id, []);
-    inDegree.set(n.id, 0);
-  });
-
-  edges.forEach(e => {
-    if (adjacencyList.has(e.source) && inDegree.has(e.target)) {
-      adjacencyList.get(e.source)!.push(e.target);
-      reverseList.get(e.target)!.push(e.source);
-      inDegree.set(e.target, inDegree.get(e.target)! + 1);
-    }
-  });
-
-  const queue: string[] = [];
-  inDegree.forEach((degree, id) => {
-    if (degree === 0) queue.push(id);
-  });
-
-  const sortedNodeIds: string[] = [];
-  while (queue.length > 0) {
-    const currId = queue.shift()!;
-    sortedNodeIds.push(currId);
-    adjacencyList.get(currId)?.forEach(neighbor => {
-      inDegree.set(neighbor, inDegree.get(neighbor)! - 1);
-      if (inDegree.get(neighbor) === 0) queue.push(neighbor);
-    });
-  }
-
-  sortedNodeIds.forEach(nodeId => {
-    const nodeIndex = updatedNodes.findIndex(n => n.id === nodeId);
-    if (nodeIndex === -1) return;
-    const node = updatedNodes[nodeIndex];
-    const { type, params } = node.data;
 
     try {
-      if (type === 'Input') {
-        node.data.outputShape = params.shape || '[B, C, H, W]';
+      if (node.moduleType === 'Input') {
+        metaByNodeId[node.id].outputShape =
+          typeof node.params.shape === 'string' && node.params.shape.length > 0
+            ? node.params.shape
+            : '[B, C, H, W]';
         return;
       }
 
-      const sources = reverseList.get(nodeId) || [];
+      const sources = index.reverseList.get(node.id) ?? [];
       if (sources.length === 0) {
-        // Disconnected node, cannot infer
         return;
       }
 
-      const inputShapes = sources.map(srcId => {
-        const srcNode = updatedNodes.find(n => n.id === srcId);
-        return srcNode?.data.outputShape;
-      });
+      const inputShapes = sources
+        .map((sourceId) => metaByNodeId[sourceId]?.outputShape)
+        .filter((shape): shape is string => typeof shape === 'string');
 
-      if (inputShapes.some(s => !s)) {
-        return; // Upstream incomplete
+      if (inputShapes.length !== sources.length) {
+        return;
       }
 
-      const shape = calculateLayerShape(type, params, inputShapes as string[]);
-      node.data.outputShape = shape;
-    } catch (err) {
-      node.data.shapeError = true;
-      node.data.outputShape = "Error: Dimension Mismatch";
+      metaByNodeId[node.id].outputShape = calculateLayerShape(
+        node.moduleType,
+        node.params,
+        inputShapes,
+      );
+    } catch {
+      metaByNodeId[node.id].shapeError = true;
+      metaByNodeId[node.id].outputShape = 'Error: Dimension Mismatch';
     }
   });
 
-  return updatedNodes;
+  return metaByNodeId;
 }
 
-function parseShape(shapeStr: string): (string | number)[] {
-  const inner = shapeStr.replace(/[[\]]/g, '').split(',').map(s => s.trim());
-  return inner.map(s => {
-    const parsed = parseInt(s, 10);
-    return isNaN(parsed) ? s : parsed;
-  });
+function parseShape(shape: string): ShapeToken[] {
+  return shape
+    .replace(/[[\]()]/g, '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => {
+      const parsed = parseInt(value, 10);
+      return Number.isNaN(parsed) ? value : parsed;
+    });
 }
 
-function formatShape(shapeArr: (string | number)[]): string {
-  return `[${shapeArr.join(', ')}]`;
+function formatShape(shape: ShapeToken[]): string {
+  return `[${shape.join(', ')}]`;
 }
 
-function calculateLayerShape(type: ModuleType, params: Record<string, any>, inputShapes: string[]): string {
-  if (inputShapes.length === 0) throw new Error("No inputs");
-  
-  if (type === 'Concat') {
-    const dimParam = params.dim !== undefined ? params.dim : 1;
-    let totalDimShape = 0;
-    const baseShape = parseShape(inputShapes[0]);
-    const dim = dimParam < 0 ? baseShape.length + dimParam : dimParam;
-    
-    for (const inStr of inputShapes) {
-      const parsed = parseShape(inStr);
-      if (parsed.length !== baseShape.length) throw new Error("Concat rank mismatch");
-      for (let i = 0; i < baseShape.length; i++) {
-        if (i !== dim && baseShape[i] !== parsed[i]) throw new Error("Concat shape mismatch");
-      }
-      const val = parsed[dim];
-      if (typeof val === 'number') totalDimShape += val;
-      else totalDimShape = -1;
-    }
-    
-    const outShape = [...baseShape];
-    if (totalDimShape > 0) outShape[dim] = totalDimShape;
-    else outShape[dim] = '...';
-    return formatShape(outShape);
+function toNumericValue(value: LayerParamValue | undefined, fallback: number): number {
+  if (typeof value === 'number') {
+    return value;
   }
 
-  const inShape = parseShape(inputShapes[0]);
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
 
-  // Spatial calculation helper
-  const calcSpatial = (inDim: any, k: any, s: any, p: any, d: any = 1, transpose: boolean = false, outPad: any = 0) => {
-    if (typeof inDim !== 'number') return inDim;
-    if (transpose) {
-      return (inDim - 1) * s - 2 * p + d * (k - 1) + outPad + 1;
+  return fallback;
+}
+
+function toNumericArray(value: LayerParamValue | undefined, count: number, fallback: number): number[] {
+  if (typeof value === 'string' && value.startsWith('[')) {
+    const parsed = parseShape(value)
+      .map((entry) => (typeof entry === 'number' ? entry : Number(entry)))
+      .filter((entry) => Number.isFinite(entry));
+
+    if (parsed.length >= count) {
+      return parsed.slice(0, count) as number[];
     }
-    return Math.floor((inDim + 2 * p - d * (k - 1) - 1) / s + 1);
+  }
+
+  return Array(count).fill(toNumericValue(value, fallback));
+}
+
+function calculateSpatialDimension(
+  inputDimension: ShapeToken,
+  kernel: number,
+  stride: number,
+  padding: number,
+  dilation = 1,
+  transpose = false,
+  outputPadding = 0,
+): ShapeToken {
+  if (typeof inputDimension !== 'number') {
+    return inputDimension;
+  }
+
+  if (transpose) {
+    return (inputDimension - 1) * stride - 2 * padding + dilation * (kernel - 1) + outputPadding + 1;
+  }
+
+  return Math.floor((inputDimension + 2 * padding - dilation * (kernel - 1) - 1) / stride + 1);
+}
+
+function getKernelArguments(params: LayerParams, count: number) {
+  return {
+    kernel: toNumericArray(params.kernel_size, count, 3),
+    stride: toNumericArray(params.stride, count, 1),
+    padding: toNumericArray(params.padding, count, 0),
+    dilation: toNumericArray(params.dilation, count, 1),
+    outputPadding: toNumericArray(params.output_padding, count, 0),
   };
+}
 
-  const getKernelArgs = (count: number) => {
-     const k = params.kernel_size ?? 3;
-     const s = params.stride ?? 1;
-     const p = params.padding ?? 0;
-     const d = params.dilation ?? 1;
-     const op = params.output_padding ?? 0;
+function calculateLayerShape(type: ModuleType, params: LayerParams, inputShapes: string[]): string {
+  if (inputShapes.length === 0) {
+    throw new Error('No inputs available');
+  }
 
-     const toArr = (v: any) => {
-        if (Array.isArray(v)) return v;
-        if (typeof v === 'string' && v.startsWith('[')) return parseShape(v);
-        return Array(count).fill(v);
-     };
+  if (type === 'Concat') {
+    const dimension = toNumericValue(params.dim, 1);
+    const baseShape = parseShape(inputShapes[0]);
+    const normalizedDimension = dimension < 0 ? baseShape.length + dimension : dimension;
+    let totalDimension = 0;
 
-     return { k: toArr(k), s: toArr(s), p: toArr(p), d: toArr(d), op: toArr(op) };
-  };
+    inputShapes.forEach((shapeString) => {
+      const parsedShape = parseShape(shapeString);
+      if (parsedShape.length !== baseShape.length) {
+        throw new Error('Concat rank mismatch');
+      }
+
+      parsedShape.forEach((entry, index) => {
+        if (index !== normalizedDimension && entry !== baseShape[index]) {
+          throw new Error('Concat shape mismatch');
+        }
+      });
+
+      const dimensionValue = parsedShape[normalizedDimension];
+      if (typeof dimensionValue === 'number') {
+        totalDimension += dimensionValue;
+      } else {
+        totalDimension = -1;
+      }
+    });
+
+    const outputShape = [...baseShape];
+    outputShape[normalizedDimension] = totalDimension > 0 ? totalDimension : '...';
+    return formatShape(outputShape);
+  }
+
+  const inputShape = parseShape(inputShapes[0]);
 
   switch (true) {
     case type.startsWith('ConvTranspose'): {
-      const dim = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
-      if (inShape.length !== dim + 2) throw new Error(`${type} expects ${dim + 2}D input`);
-      const { k, s, p, d, op } = getKernelArgs(dim);
-      const outC = params.out_channels || 64;
-      const spatial = inShape.slice(2).map((v, i) => calcSpatial(v, k[i], s[i], p[i], d[i], true, op[i]));
-      return formatShape([inShape[0], outC, ...spatial]);
+      const dimension = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
+      if (inputShape.length !== dimension + 2) {
+        throw new Error(`${type} expects ${dimension + 2}D input`);
+      }
+
+      const { kernel, stride, padding, dilation, outputPadding } = getKernelArguments(params, dimension);
+      const outChannels = toNumericValue(params.out_channels, 64);
+      const spatialShape = inputShape
+        .slice(2)
+        .map((entry, index) =>
+          calculateSpatialDimension(
+            entry,
+            kernel[index],
+            stride[index],
+            padding[index],
+            dilation[index],
+            true,
+            outputPadding[index],
+          ),
+        );
+
+      return formatShape([inputShape[0], outChannels, ...spatialShape]);
     }
     case type.startsWith('Conv'): {
-      const dim = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
-      if (inShape.length !== dim + 2) throw new Error(`${type} expects ${dim + 2}D input`);
-      const { k, s, p, d } = getKernelArgs(dim);
-      const outC = params.out_channels || 64;
-      const spatial = inShape.slice(2).map((v, i) => calcSpatial(v, k[i], s[i], p[i], d[i]));
-      return formatShape([inShape[0], outC, ...spatial]);
+      const dimension = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
+      if (inputShape.length !== dimension + 2) {
+        throw new Error(`${type} expects ${dimension + 2}D input`);
+      }
+
+      const { kernel, stride, padding, dilation } = getKernelArguments(params, dimension);
+      const outChannels = toNumericValue(params.out_channels, 64);
+      const spatialShape = inputShape
+        .slice(2)
+        .map((entry, index) =>
+          calculateSpatialDimension(
+            entry,
+            kernel[index],
+            stride[index],
+            padding[index],
+            dilation[index],
+          ),
+        );
+
+      return formatShape([inputShape[0], outChannels, ...spatialShape]);
     }
     case type.includes('Pool') && !type.includes('Adaptive'): {
-      const dim = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
-      if (inShape.length !== dim + 2) throw new Error(`${type} expects ${dim + 2}D input`);
-      const { k, s, p, d } = getKernelArgs(dim);
-      const spatial = inShape.slice(2).map((v, i) => calcSpatial(v, k[i], s[i], p[i], d[i]));
-      return formatShape([inShape[0], inShape[1], ...spatial]);
+      const dimension = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
+      if (inputShape.length !== dimension + 2) {
+        throw new Error(`${type} expects ${dimension + 2}D input`);
+      }
+
+      const { kernel, stride, padding, dilation } = getKernelArguments(params, dimension);
+      const spatialShape = inputShape
+        .slice(2)
+        .map((entry, index) =>
+          calculateSpatialDimension(
+            entry,
+            kernel[index],
+            stride[index],
+            padding[index],
+            dilation[index],
+          ),
+        );
+
+      return formatShape([inputShape[0], inputShape[1], ...spatialShape]);
     }
     case type.includes('AdaptiveAvgPool'): {
-       const dim = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
-       if (inShape.length !== dim + 2) throw new Error(`${type} expects ${dim + 2}D input`);
-       const outSizeRaw = params.output_size ?? (dim === 1 ? 1 : Array(dim).fill(7));
-       const outSize = Array.isArray(outSizeRaw) ? outSizeRaw : (typeof outSizeRaw === 'string' && outSizeRaw.startsWith('[') ? parseShape(outSizeRaw) : [outSizeRaw]);
-       return formatShape([inShape[0], inShape[1], ...outSize]);
+      const dimension = type.endsWith('1d') ? 1 : type.endsWith('2d') ? 2 : 3;
+      if (inputShape.length !== dimension + 2) {
+        throw new Error(`${type} expects ${dimension + 2}D input`);
+      }
+
+      const outputSize = params.output_size;
+      const resolvedSize: ShapeToken[] =
+        typeof outputSize === 'string' && outputSize.startsWith('[')
+          ? parseShape(outputSize)
+          : [
+              typeof outputSize === 'undefined'
+                ? dimension === 1
+                  ? 1
+                  : 7
+                : typeof outputSize === 'boolean'
+                  ? String(outputSize)
+                  : outputSize,
+            ];
+
+      return formatShape([inputShape[0], inputShape[1], ...resolvedSize]);
     }
     case type === 'Linear': {
-      if (inShape.length < 2) throw new Error("Linear expects >= 2D input");
-      const outFeatures = params.out_features || 10;
-      const outShape = [...inShape];
-      outShape[outShape.length - 1] = outFeatures;
-      return formatShape(outShape);
+      if (inputShape.length < 2) {
+        throw new Error('Linear expects at least 2D input');
+      }
+
+      const outFeatures = toNumericValue(params.out_features, 10);
+      const outputShape = [...inputShape];
+      outputShape[outputShape.length - 1] = outFeatures;
+      return formatShape(outputShape);
     }
     case type === 'Bilinear': {
-       // Assuming inputShapes[0] and [1] are the two inputs
-       const outFeatures = params.out_features || 64;
-       return formatShape([inShape[0], outFeatures]);
+      const outFeatures = toNumericValue(params.out_features, 64);
+      return formatShape([inputShape[0], outFeatures]);
     }
     case type === 'Flatten': {
-      const startDim = params.start_dim ?? 1;
-      const endDim = params.end_dim ?? -1;
-      const s = startDim < 0 ? inShape.length + startDim : startDim;
-      const e = endDim < 0 ? inShape.length + endDim : endDim;
-      
-      const middle = inShape.slice(s, e + 1);
-      let flattened: string | number = 1;
-      for (const val of middle) {
-        if (typeof val === 'number' && typeof flattened === 'number') flattened *= val;
-        else flattened = '...';
-      }
-      return formatShape([...inShape.slice(0, s), flattened, ...inShape.slice(e + 1)]);
+      const startDimension = toNumericValue(params.start_dim, 1);
+      const endDimension = toNumericValue(params.end_dim, -1);
+      const normalizedStart = startDimension < 0 ? inputShape.length + startDimension : startDimension;
+      const normalizedEnd = endDimension < 0 ? inputShape.length + endDimension : endDimension;
+      const middleShape = inputShape.slice(normalizedStart, normalizedEnd + 1);
+
+      let flattenedDimension: ShapeToken = 1;
+      middleShape.forEach((entry) => {
+        if (typeof entry === 'number' && typeof flattenedDimension === 'number') {
+          flattenedDimension *= entry;
+        } else {
+          flattenedDimension = '...';
+        }
+      });
+
+      return formatShape([
+        ...inputShape.slice(0, normalizedStart),
+        flattenedDimension,
+        ...inputShape.slice(normalizedEnd + 1),
+      ]);
     }
     case type === 'Unflatten': {
-       const dim = params.dim ?? 1;
-       const unflattenedSizeRaw = params.unflattened_size ?? '[64, 7, 7]';
-       const unflattenedSize = typeof unflattenedSizeRaw === 'string' && unflattenedSizeRaw.startsWith('[') ? parseShape(unflattenedSizeRaw) : [unflattenedSizeRaw];
-       const outShape = [...inShape];
-       outShape.splice(dim, 1, ...unflattenedSize);
-       return formatShape(outShape);
+      const dimension = toNumericValue(params.dim, 1);
+      const unflattenedSize =
+        typeof params.unflattened_size === 'string' && params.unflattened_size.startsWith('[')
+          ? parseShape(params.unflattened_size)
+          : [
+              typeof params.unflattened_size === 'boolean'
+                ? String(params.unflattened_size)
+                : (params.unflattened_size ?? '[64, 7, 7]'),
+            ];
+      const outputShape = [...inputShape];
+      outputShape.splice(dimension, 1, ...unflattenedSize);
+      return formatShape(outputShape);
     }
     case type === 'Upsample': {
-       const sizeRaw = params.size;
-       const scaleRaw = params.scale_factor;
-       if (sizeRaw) {
-          const size = typeof sizeRaw === 'string' && sizeRaw.startsWith('[') ? parseShape(sizeRaw) : [sizeRaw];
-          return formatShape([inShape[0], inShape[1], ...size]);
-       }
-       if (scaleRaw) {
-          const spatial = inShape.slice(2).map(v => typeof v === 'number' ? Math.floor(v * scaleRaw) : '...');
-          return formatShape([inShape[0], inShape[1], ...spatial]);
-       }
-       return formatShape(inShape);
+      if (typeof params.size === 'string' && params.size.startsWith('[')) {
+        return formatShape([inputShape[0], inputShape[1], ...parseShape(params.size)]);
+      }
+
+      if (typeof params.scale_factor !== 'undefined') {
+        const scaleFactor = toNumericValue(params.scale_factor, 1);
+        const spatialShape = inputShape
+          .slice(2)
+          .map((entry) => (typeof entry === 'number' ? Math.floor(entry * scaleFactor) : '...'));
+        return formatShape([inputShape[0], inputShape[1], ...spatialShape]);
+      }
+
+      return formatShape(inputShape);
     }
     default:
-      return formatShape(inShape);
+      return formatShape(inputShape);
   }
 }

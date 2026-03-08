@@ -1,76 +1,112 @@
 import { create } from 'zustand';
-import { addEdge, applyNodeChanges, applyEdgeChanges } from 'reactflow';
-import type { Node, Edge as ReactFlowEdge, Connection, NodeChange, EdgeChange } from 'reactflow';
-import { inferShapes } from '../compiler/shapeInference';
+import { addEdge, applyEdgeChanges, applyNodeChanges } from 'reactflow';
+import type {
+  Connection,
+  EdgeChange,
+  NodeChange,
+  Node as ReactFlowNode,
+} from 'reactflow';
 
-export type Edge = ReactFlowEdge;
+import { inferGraphNodeMeta } from '../compiler/shapeInference';
+import {
+  createGraphNodeFromReactFlowNode,
+  createGraphEdgeFromReactFlowEdge,
+  getAbsolutePositionForReactFlowNode,
+  graphToReactFlowEdges,
+  graphToReactFlowNodes,
+  type Edge,
+  type ModuleData,
+  type NetworkNode,
+} from '../domain/graph/reactFlowAdapter';
+import type {
+  GraphLayoutState,
+  GraphModel,
+  GraphSnapshot,
+} from '../domain/graph/types';
+import {
+  cloneGraphLayoutState,
+  cloneGraphModel,
+  createEmptyGraphLayout,
+  createEmptyGraphModel,
+  omitDimensions,
+  omitPositions,
+} from '../domain/graph/utils';
+import { canConnectGraphNodes } from '../domain/graph/validation';
+import { getLayerDefinition, type LayerParamValue, type ModuleType } from '../domain/layers';
 
-export type ModuleType = 
-  | 'Input' | 'Output' | 'Concat'
-  | 'Conv1d' | 'Conv2d' | 'Conv3d'
-  | 'ConvTranspose1d' | 'ConvTranspose2d' | 'ConvTranspose3d'
-  | 'Linear' | 'Bilinear'
-  | 'ReLU' | 'ReLU6' | 'LeakyReLU' | 'PReLU' | 'ELU' | 'SELU' | 'GELU' | 'Sigmoid' | 'Tanh' | 'LogSoftmax' | 'Softmax'
-  | 'MaxPool1d' | 'MaxPool2d' | 'MaxPool3d'
-  | 'AvgPool1d' | 'AvgPool2d' | 'AvgPool3d'
-  | 'AdaptiveAvgPool1d' | 'AdaptiveAvgPool2d' | 'AdaptiveAvgPool3d'
-  | 'BatchNorm1d' | 'BatchNorm2d' | 'BatchNorm3d'
-  | 'LayerNorm' | 'GroupNorm' | 'InstanceNorm1d' | 'InstanceNorm2d' | 'InstanceNorm3d'
-  | 'Dropout' | 'Dropout2d' | 'Dropout3d' | 'AlphaDropout'
-  | 'Flatten' | 'Unflatten' | 'Upsample'
-  | 'Sequential' | 'ModuleList' | 'ModuleDict';
-
-export const TYPE_COLORS: Record<ModuleType, string> = {
-  Input: '#10B981', Output: '#F43F5E', Concat: '#D946EF',
-  Conv1d: '#FB923C', Conv2d: '#F97316', Conv3d: '#EA580C',
-  ConvTranspose1d: '#FDBA74', ConvTranspose2d: '#FB923C', ConvTranspose3d: '#F97316',
-  Linear: '#EF4444', Bilinear: '#DC2626',
-  ReLU: '#F59E0B', ReLU6: '#F59E0B', LeakyReLU: '#D97706', PReLU: '#B45309',
-  ELU: '#FBBF24', SELU: '#F59E0B', GELU: '#D97706',
-  Sigmoid: '#FCD34D', Tanh: '#FBBF24', LogSoftmax: '#F59E0B', Softmax: '#F59E0B',
-  MaxPool1d: '#22D3EE', MaxPool2d: '#06B6D4', MaxPool3d: '#0891B2',
-  AvgPool1d: '#38BDF8', AvgPool2d: '#0EA5E9', AvgPool3d: '#0284C7',
-  AdaptiveAvgPool1d: '#60A5FA', AdaptiveAvgPool2d: '#3B82F6', AdaptiveAvgPool3d: '#2563EB',
-  BatchNorm1d: '#C084FC', BatchNorm2d: '#A855F7', BatchNorm3d: '#9333EA',
-  LayerNorm: '#E879F9', GroupNorm: '#D946EF',
-  InstanceNorm1d: '#A78BFA', InstanceNorm2d: '#8B5CF6', InstanceNorm3d: '#7C3AED',
-  Dropout: '#94A3B8', Dropout2d: '#64748B', Dropout3d: '#475569', AlphaDropout: '#334155',
-  Flatten: '#8B5CF6', Unflatten: '#7C3AED', Upsample: '#6366F1',
-  Sequential: '#334155', ModuleList: '#334155', ModuleDict: '#334155',
-};
-
-export interface ModuleData {
-  type: ModuleType;
-  params: Record<string, any>;
-  attributeName: string;
-  outputShape?: string;
-  shapeError?: boolean;
-  connected?: boolean;
-}
-
-export type NetworkNode = Node<ModuleData>;
-
-// ─── History ──────────────────────────────────────────────────────────────────
-interface Snapshot { nodes: NetworkNode[]; edges: Edge[]; }
 const MAX_HISTORY = 50;
 
+function createInitialSnapshot(): GraphSnapshot {
+  return {
+    graph: createEmptyGraphModel(),
+    layout: createEmptyGraphLayout(),
+  };
+}
+
+function materializeWorkspace(graph: GraphModel, layout: GraphLayoutState) {
+  const metaByNodeId = inferGraphNodeMeta(graph);
+  return {
+    graph,
+    layout,
+    modelName: graph.modelName,
+    selectedNodeId: layout.selection.nodeId,
+    selectedEdgeId: layout.selection.edgeId,
+    nodes: graphToReactFlowNodes(graph, layout, metaByNodeId),
+    edges: graphToReactFlowEdges(graph, layout),
+  };
+}
+
+function createSnapshot(graph: GraphModel, layout: GraphLayoutState): GraphSnapshot {
+  return {
+    graph: cloneGraphModel(graph),
+    layout: cloneGraphLayoutState(layout),
+  };
+}
+
+function isContainerIdValid(graph: GraphModel, nodeId: string | undefined): nodeId is string {
+  if (!nodeId) {
+    return false;
+  }
+
+  const node = graph.nodes.find((candidate) => candidate.id === nodeId);
+  return !!node && getLayerDefinition(node.moduleType).kind === 'container';
+}
+
+function clearRemovedContainers(graph: GraphModel, removedNodeIds: Set<string>): GraphModel {
+  return {
+    ...graph,
+    nodes: graph.nodes
+      .filter((node) => !removedNodeIds.has(node.id))
+      .map((node) =>
+        node.containerId && removedNodeIds.has(node.containerId)
+          ? { ...node, containerId: undefined }
+          : node,
+      ),
+    edges: graph.edges.filter(
+      (edge) => !removedNodeIds.has(edge.sourceId) && !removedNodeIds.has(edge.targetId),
+    ),
+  };
+}
+
 interface WorkspaceState {
+  graph: GraphModel;
+  layout: GraphLayoutState;
   modelName: string;
   nodes: NetworkNode[];
   edges: Edge[];
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
-  // History
-  history: Snapshot[];
+  history: GraphSnapshot[];
   historyIndex: number;
   canUndo: boolean;
   canRedo: boolean;
   undo: () => void;
   redo: () => void;
-  // Graph handlers
+  resetWorkspace: () => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
+  isValidConnection: (connection: Connection) => boolean;
   onEdgesDelete: (edges: Edge[]) => void;
   onNodesDelete: (nodes: NetworkNode[]) => void;
   addNode: (node: NetworkNode) => void;
@@ -78,180 +114,344 @@ interface WorkspaceState {
   deleteEdgeById: (id: string) => void;
   setSelectedNode: (id: string | null) => void;
   setSelectedEdge: (id: string | null) => void;
-  updateNodeParams: (id: string, params: Record<string, any>) => void;
+  updateNodeParams: (id: string, params: Record<string, LayerParamValue>) => void;
   updateNodeAttributeName: (id: string, name: string) => void;
   reparentNode: (childId: string, parentId: string | undefined) => void;
   setModelName: (name: string) => void;
 }
 
-const initialNodes: NetworkNode[] = [];
-const initialEdges: Edge[] = [];
+const initialSnapshot = createInitialSnapshot();
+const initialMaterialized = materializeWorkspace(initialSnapshot.graph, initialSnapshot.layout);
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
-  /**
-   * Call AFTER a structural mutation has been applied via set({nodes, edges}).
-   * Saves the NEW state as a history entry so undo can revert to this point
-   * and redo can replay it.
-   */
-  function commitHistory(nodes: NetworkNode[], edges: Edge[]) {
-    const { history, historyIndex } = get();
-    const trimmed = history.slice(0, historyIndex + 1);
-    trimmed.push({ nodes, edges });
-    if (trimmed.length > MAX_HISTORY) trimmed.shift();
+  function applyWorkspaceState(
+    graph: GraphModel,
+    layout: GraphLayoutState,
+    history = get().history,
+    historyIndex = get().historyIndex,
+  ) {
     set({
-      history: trimmed,
-      historyIndex: trimmed.length - 1,
-      canUndo: true,
-      canRedo: false,
+      ...materializeWorkspace(graph, layout),
+      history,
+      historyIndex,
+      canUndo: historyIndex > 0,
+      canRedo: historyIndex < history.length - 1,
     });
   }
 
+  function commitWorkspace(graph: GraphModel, layout: GraphLayoutState) {
+    const state = get();
+    const trimmedHistory = state.history.slice(0, state.historyIndex + 1);
+    const nextHistory = [...trimmedHistory, createSnapshot(graph, layout)].slice(-MAX_HISTORY);
+    const nextHistoryIndex = nextHistory.length - 1;
+    applyWorkspaceState(graph, layout, nextHistory, nextHistoryIndex);
+  }
+
   return {
-    modelName: 'GeneratedModel',
-    nodes: initialNodes,
-    edges: initialEdges,
-    selectedNodeId: null,
-    selectedEdgeId: null,
-    history: [],
-    historyIndex: -1,
+    ...initialMaterialized,
+    history: [createSnapshot(initialSnapshot.graph, initialSnapshot.layout)],
+    historyIndex: 0,
     canUndo: false,
     canRedo: false,
 
-    // ── Undo: go one step back in history ────────────────────────────────────
     undo: () => {
-      const { history, historyIndex } = get();
-      const prevIndex = historyIndex - 1;
-      if (prevIndex < 0) return;
-      const snap = history[prevIndex];
-      set({
-        nodes: inferShapes(snap.nodes, snap.edges),
-        edges: snap.edges,
-        historyIndex: prevIndex,
-        canUndo: prevIndex > 0,
-        canRedo: true,
-        selectedNodeId: null,
-        selectedEdgeId: null,
-      });
+      const state = get();
+      if (state.historyIndex === 0) {
+        return;
+      }
+
+      const nextHistoryIndex = state.historyIndex - 1;
+      const snapshot = state.history[nextHistoryIndex];
+      applyWorkspaceState(
+        cloneGraphModel(snapshot.graph),
+        {
+          ...cloneGraphLayoutState(snapshot.layout),
+          selection: { nodeId: null, edgeId: null },
+        },
+        state.history,
+        nextHistoryIndex,
+      );
     },
 
-    // ── Redo: go one step forward in history ──────────────────────────────────
     redo: () => {
-      const { history, historyIndex } = get();
-      const nextIndex = historyIndex + 1;
-      if (nextIndex >= history.length) return;
-      const snap = history[nextIndex];
-      set({
-        nodes: inferShapes(snap.nodes, snap.edges),
-        edges: snap.edges,
-        historyIndex: nextIndex,
-        canUndo: true,
-        canRedo: nextIndex + 1 < history.length,
-        selectedNodeId: null,
-        selectedEdgeId: null,
-      });
+      const state = get();
+      if (state.historyIndex >= state.history.length - 1) {
+        return;
+      }
+
+      const nextHistoryIndex = state.historyIndex + 1;
+      const snapshot = state.history[nextHistoryIndex];
+      applyWorkspaceState(
+        cloneGraphModel(snapshot.graph),
+        {
+          ...cloneGraphLayoutState(snapshot.layout),
+          selection: { nodeId: null, edgeId: null },
+        },
+        state.history,
+        nextHistoryIndex,
+      );
     },
 
-    // ── Position / selection changes — no history (too noisy) ────────────────
-    onNodesChange: (changes: NodeChange[]) => {
-      const nextNodes = applyNodeChanges(changes, get().nodes) as NetworkNode[];
-      set({ nodes: inferShapes(nextNodes, get().edges) });
-    },
-    onEdgesChange: (changes: EdgeChange[]) => {
-      const nextEdges = applyEdgeChanges(changes, get().edges);
-      set({ edges: nextEdges, nodes: inferShapes(get().nodes, nextEdges) });
+    resetWorkspace: () => {
+      const snapshot = createInitialSnapshot();
+      applyWorkspaceState(snapshot.graph, snapshot.layout, [createSnapshot(snapshot.graph, snapshot.layout)], 0);
     },
 
-    // ── Structural mutations — commit history after each one ──────────────────
-    onConnect: (connection: Connection) => {
-      const nodes = get().nodes;
-      const sourceNode = nodes.find(n => n.id === connection.source) as NetworkNode;
-      const strokeColor = sourceNode ? TYPE_COLORS[sourceNode.data.type as ModuleType] : '#EE4C2C';
-      const nextEdges = addEdge({
-        ...connection,
-        type: 'smoothstep',
-        animated: true,
-        style: { stroke: strokeColor, strokeWidth: 2 },
-        interactionWidth: 20,
-      }, get().edges);
-      const nextNodes = inferShapes(nodes, nextEdges);
-      set({ edges: nextEdges, nodes: nextNodes });
-      commitHistory(nextNodes, nextEdges);
+    onNodesChange: (changes) => {
+      const state = get();
+      const nextNodes = applyNodeChanges(changes, state.nodes) as NetworkNode[];
+      const nextPositions = { ...state.layout.positionsById };
+      const nextDimensions = { ...state.layout.dimensionsById };
+      const graphNodeMap = new Map(state.graph.nodes.map((node) => [node.id, node] as const));
+
+      nextNodes
+        .slice()
+        .sort((leftNode, rightNode) => {
+          const leftHasParent = Boolean(graphNodeMap.get(leftNode.id)?.containerId);
+          const rightHasParent = Boolean(graphNodeMap.get(rightNode.id)?.containerId);
+          return Number(leftHasParent) - Number(rightHasParent);
+        })
+        .forEach((node) => {
+          nextPositions[node.id] = getAbsolutePositionForReactFlowNode(
+            node,
+            state.graph,
+            { ...state.layout, positionsById: nextPositions },
+          );
+
+          if (typeof node.width === 'number' && typeof node.height === 'number') {
+            nextDimensions[node.id] = {
+              width: node.width,
+              height: node.height,
+            };
+          }
+        });
+
+      const selectedNodes = nextNodes.filter((node) => node.selected);
+      const nextLayout: GraphLayoutState = {
+        ...state.layout,
+        positionsById: nextPositions,
+        dimensionsById: nextDimensions,
+        selection: {
+          nodeId: selectedNodes.length === 1 ? selectedNodes[0].id : null,
+          edgeId: selectedNodes.length > 0 ? null : state.layout.selection.edgeId,
+        },
+      };
+
+      applyWorkspaceState(state.graph, nextLayout);
     },
 
-    addNode: (node: NetworkNode) => {
-      const nextNodes = inferShapes([...get().nodes, node], get().edges);
-      const nextEdges = get().edges;
-      set({ nodes: nextNodes });
-      commitHistory(nextNodes, nextEdges);
+    onEdgesChange: (changes) => {
+      const state = get();
+      const nextEdges = applyEdgeChanges(changes, state.edges);
+      const selectedEdges = nextEdges.filter((edge) => edge.selected);
+      const nextLayout: GraphLayoutState = {
+        ...state.layout,
+        selection: {
+          nodeId: selectedEdges.length > 0 ? null : state.layout.selection.nodeId,
+          edgeId: selectedEdges.length === 1 ? selectedEdges[0].id : null,
+        },
+      };
+
+      applyWorkspaceState(state.graph, nextLayout);
     },
 
-    deleteNodeById: (id: string) => {
-      const nextEdges = get().edges.filter(e => e.source !== id && e.target !== id);
-      const nextNodes = inferShapes(get().nodes.filter(n => n.id !== id), nextEdges);
-      set({ nodes: nextNodes, edges: nextEdges, selectedNodeId: null, selectedEdgeId: null });
-      commitHistory(nextNodes, nextEdges);
+    onConnect: (connection) => {
+      if (!connection.source || !connection.target) {
+        return;
+      }
+
+      const state = get();
+      if (!canConnectGraphNodes(state.graph, connection)) {
+        return;
+      }
+
+      const projectedEdges = graphToReactFlowEdges(state.graph, state.layout);
+      const nextProjectedEdges = addEdge(connection, projectedEdges);
+      const createdEdge = nextProjectedEdges.find(
+        (edge) => !state.graph.edges.some((existingEdge) => existingEdge.id === edge.id),
+      );
+
+      if (!createdEdge) {
+        return;
+      }
+
+      commitWorkspace(
+        {
+          ...state.graph,
+          edges: [...state.graph.edges, createGraphEdgeFromReactFlowEdge(createdEdge)],
+        },
+        state.layout,
+      );
     },
 
-    deleteEdgeById: (id: string) => {
-      const nextEdges = get().edges.filter(e => e.id !== id);
-      const nextNodes = inferShapes(get().nodes, nextEdges);
-      set({ edges: nextEdges, nodes: nextNodes, selectedEdgeId: null });
-      commitHistory(nextNodes, nextEdges);
+    isValidConnection: (connection) => {
+      const state = get();
+      return canConnectGraphNodes(state.graph, connection);
     },
 
     onEdgesDelete: (deletedEdges) => {
-      const nextEdges = get().edges.filter(e => !deletedEdges.some(d => d.id === e.id));
-      const nextNodes = inferShapes(get().nodes, nextEdges);
-      set({ edges: nextEdges, nodes: nextNodes });
-      commitHistory(nextNodes, nextEdges);
+      const state = get();
+      const removedEdgeIds = new Set(deletedEdges.map((edge) => edge.id));
+      commitWorkspace(
+        {
+          ...state.graph,
+          edges: state.graph.edges.filter((edge) => !removedEdgeIds.has(edge.id)),
+        },
+        {
+          ...state.layout,
+          selection:
+            state.layout.selection.edgeId && removedEdgeIds.has(state.layout.selection.edgeId)
+              ? { nodeId: null, edgeId: null }
+              : state.layout.selection,
+        },
+      );
     },
 
     onNodesDelete: (deletedNodes) => {
-      const ids = new Set(deletedNodes.map(n => n.id));
-      const nextEdges = get().edges.filter(e => !ids.has(e.source) && !ids.has(e.target));
-      const nextNodes = inferShapes(get().nodes, nextEdges);
-      set({ edges: nextEdges, nodes: nextNodes });
-      commitHistory(nextNodes, nextEdges);
+      const state = get();
+      const removedNodeIds = new Set(deletedNodes.map((node) => node.id));
+      const nextGraph = clearRemovedContainers(state.graph, removedNodeIds);
+      const nextLayout: GraphLayoutState = {
+        ...state.layout,
+        positionsById: omitPositions(state.layout.positionsById, removedNodeIds),
+        dimensionsById: omitDimensions(state.layout.dimensionsById, removedNodeIds),
+        selection:
+          (state.layout.selection.nodeId && removedNodeIds.has(state.layout.selection.nodeId)) ||
+          (state.layout.selection.edgeId &&
+            !nextGraph.edges.some((edge) => edge.id === state.layout.selection.edgeId))
+            ? { nodeId: null, edgeId: null }
+            : state.layout.selection,
+      };
+
+      commitWorkspace(nextGraph, nextLayout);
     },
 
-    // ── Non-structural ────────────────────────────────────────────────────────
-    setSelectedNode: (id) => {
-      set({ selectedNodeId: id, selectedEdgeId: null });
-    },
-    setSelectedEdge: (id) => {
-      set({ selectedEdgeId: id, selectedNodeId: null });
-    },
-    updateNodeParams: (id, params) => {
-      const nextNodes = get().nodes.map(node =>
-        node.id === id
-          ? { ...node, data: { ...node.data, params: { ...node.data.params, ...params } } }
-          : node
+    addNode: (node) => {
+      const state = get();
+      const { graphNode, position } = createGraphNodeFromReactFlowNode(node);
+      commitWorkspace(
+        {
+          ...state.graph,
+          nodes: [...state.graph.nodes, graphNode],
+        },
+        {
+          ...state.layout,
+          positionsById: {
+            ...state.layout.positionsById,
+            [node.id]: position,
+          },
+        },
       );
-      set({ nodes: inferShapes(nextNodes, get().edges) });
     },
+
+    deleteNodeById: (id) => {
+      const state = get();
+      const removedNodeIds = new Set([id]);
+      const nextGraph = clearRemovedContainers(state.graph, removedNodeIds);
+      const nextLayout: GraphLayoutState = {
+        ...state.layout,
+        positionsById: omitPositions(state.layout.positionsById, removedNodeIds),
+        dimensionsById: omitDimensions(state.layout.dimensionsById, removedNodeIds),
+        selection:
+          state.layout.selection.nodeId === id
+            ? { nodeId: null, edgeId: null }
+            : state.layout.selection,
+      };
+
+      commitWorkspace(nextGraph, nextLayout);
+    },
+
+    deleteEdgeById: (id) => {
+      const state = get();
+      commitWorkspace(
+        {
+          ...state.graph,
+          edges: state.graph.edges.filter((edge) => edge.id !== id),
+        },
+        {
+          ...state.layout,
+          selection: state.layout.selection.edgeId === id ? { nodeId: null, edgeId: null } : state.layout.selection,
+        },
+      );
+    },
+
+    setSelectedNode: (id) => {
+      const state = get();
+      applyWorkspaceState(state.graph, {
+        ...state.layout,
+        selection: {
+          nodeId: id,
+          edgeId: null,
+        },
+      });
+    },
+
+    setSelectedEdge: (id) => {
+      const state = get();
+      applyWorkspaceState(state.graph, {
+        ...state.layout,
+        selection: {
+          nodeId: null,
+          edgeId: id,
+        },
+      });
+    },
+
+    updateNodeParams: (id, params) => {
+      const state = get();
+      commitWorkspace(
+        {
+          ...state.graph,
+          nodes: state.graph.nodes.map((node) =>
+            node.id === id ? { ...node, params: { ...node.params, ...params } } : node,
+          ),
+        },
+        state.layout,
+      );
+    },
+
     updateNodeAttributeName: (id, name) => {
-      set({
-        nodes: get().nodes.map(node =>
-          node.id === id ? { ...node, data: { ...node.data, attributeName: name } } : node
-        )
-      });
+      const state = get();
+      commitWorkspace(
+        {
+          ...state.graph,
+          nodes: state.graph.nodes.map((node) =>
+            node.id === id ? { ...node, attributeName: name } : node,
+          ),
+        },
+        state.layout,
+      );
     },
+
     reparentNode: (childId, parentId) => {
-      const nextNodes = get().nodes.map(node => {
-        if (node.id === childId) {
-          if (parentId) {
-            // Convert exact canvas coordinates into relative container coordinates
-            return { ...node, parentNode: parentId, extent: 'parent' as const };
-          } else {
-            // Remove parent bounding
-            return { ...node, parentNode: undefined, extent: undefined };
-          }
-        }
-        return node;
-      });
-      set({ nodes: inferShapes(nextNodes, get().edges) });
-      commitHistory(nextNodes, get().edges);
+      const state = get();
+      const resolvedParentId =
+        parentId && parentId !== childId && isContainerIdValid(state.graph, parentId)
+          ? parentId
+          : undefined;
+
+      commitWorkspace(
+        {
+          ...state.graph,
+          nodes: state.graph.nodes.map((node) =>
+            node.id === childId ? { ...node, containerId: resolvedParentId } : node,
+          ),
+        },
+        state.layout,
+      );
     },
-    setModelName: (name) => set({ modelName: name }),
+
+    setModelName: (name) => {
+      const state = get();
+      applyWorkspaceState(
+        {
+          ...state.graph,
+          modelName: name,
+        },
+        state.layout,
+      );
+    },
   };
 });
+
+export type { Edge, ModuleData, ModuleType, NetworkNode, ReactFlowNode };

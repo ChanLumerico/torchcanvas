@@ -1,11 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DragEvent } from 'react';
-import ReactFlow, { Background, Controls, MiniMap, ReactFlowProvider, useReactFlow } from 'reactflow';
-import type { Node } from 'reactflow';
+import type { DragEvent, MouseEvent as ReactMouseEvent } from 'react';
+import ReactFlow, {
+  Background,
+  Controls,
+  MiniMap,
+  ReactFlowProvider,
+  useReactFlow,
+} from 'reactflow';
+import type {
+  Node,
+  OnSelectionChangeParams,
+} from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { useWorkspaceStore, TYPE_COLORS } from '../../store/workspaceStore';
-import type { ModuleType, NetworkNode } from '../../store/workspaceStore';
+import {
+  createDefaultAttributeName,
+  getDefaultParams,
+  getLayerColor,
+  isContainerModule,
+  type ModuleType,
+} from '../../domain/layers';
+import type { ModuleData } from '../../domain/graph/reactFlowAdapter';
+import { useWorkspaceStore, type NetworkNode } from '../../store/workspaceStore';
 import ModuleNode from './ModuleNode';
 import ContainerNode from './ContainerNode';
 import Omnibar from './Omnibar';
@@ -20,15 +36,21 @@ const getId = () => `dndnode_${id++}`;
 
 function CanvasInner() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const reactFlow = useReactFlow();
-  const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
-  const [omnibarPos, setOmnibarPos] = useState<{ x: number, y: number, flowX: number, flowY: number } | null>(null);
-  
+  const reactFlow = useReactFlow<ModuleData>();
+  const [omnibarPos, setOmnibarPos] = useState<{
+    x: number;
+    y: number;
+    flowX: number;
+    flowY: number;
+  } | null>(null);
+
+  const graph = useWorkspaceStore((state) => state.graph);
   const nodes = useWorkspaceStore((state) => state.nodes);
   const edges = useWorkspaceStore((state) => state.edges);
   const onNodesChange = useWorkspaceStore((state) => state.onNodesChange);
   const onEdgesChange = useWorkspaceStore((state) => state.onEdgesChange);
   const onConnect = useWorkspaceStore((state) => state.onConnect);
+  const isValidConnection = useWorkspaceStore((state) => state.isValidConnection);
   const onNodesDelete = useWorkspaceStore((state) => state.onNodesDelete);
   const onEdgesDelete = useWorkspaceStore((state) => state.onEdgesDelete);
   const addNode = useWorkspaceStore((state) => state.addNode);
@@ -36,20 +58,61 @@ function CanvasInner() {
   const setSelectedEdge = useWorkspaceStore((state) => state.setSelectedEdge);
   const reparentNode = useWorkspaceStore((state) => state.reparentNode);
 
-  // ── Keyboard shortcuts for undo / redo ─────────────────────────────────
+  const getFlowPosition = useCallback(
+    (clientX: number, clientY: number) => {
+      const bounds = reactFlowWrapper.current?.getBoundingClientRect();
+      if (!bounds) {
+        return { x: 80, y: 80 };
+      }
+
+      const viewport = reactFlow.getViewport();
+      const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
+      const projected = {
+        x: (clientX - bounds.left - viewport.x) / zoom,
+        y: (clientY - bounds.top - viewport.y) / zoom,
+      };
+
+      if (Number.isFinite(projected.x) && Number.isFinite(projected.y)) {
+        return projected;
+      }
+
+      return {
+        x: Math.max(80, bounds.width / 2 - 80),
+        y: Math.max(80, bounds.height / 2 - 40),
+      };
+    },
+    [reactFlow],
+  );
+
+  const revealNode = useCallback(
+    (x: number, y: number) => {
+      window.requestAnimationFrame(() => {
+        reactFlow.setCenter(x + 80, y + 40, {
+          zoom: 1,
+          duration: 180,
+        });
+      });
+    },
+    [reactFlow],
+  );
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (!mod) return;
-      if (e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().includes('MAC');
+      const modifierPressed = isMac ? event.metaKey : event.ctrlKey;
+      if (!modifierPressed) {
+        return;
+      }
+
+      if (event.key === 'z' && !event.shiftKey) {
+        event.preventDefault();
         useWorkspaceStore.getState().undo();
-      } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
-        e.preventDefault();
+      } else if ((event.key === 'z' && event.shiftKey) || event.key === 'y') {
+        event.preventDefault();
         useWorkspaceStore.getState().redo();
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
@@ -59,106 +122,118 @@ function CanvasInner() {
     event.dataTransfer.dropEffect = 'move';
   }, []);
 
-  const onNodeDragStop = useCallback((_event: React.MouseEvent, node: NetworkNode) => {
-    // Check if the node was dropped over a container
-    if (node.type === 'containerNode') return; // Cannot put container in container for now
+  const onNodeDragStop = useCallback(
+    (_event: ReactMouseEvent, node: NetworkNode) => {
+      if (node.type === 'containerNode') {
+        return;
+      }
 
-    const intersections = reactFlow.getIntersectingNodes(node);
-    const container = intersections.find((n: Node) => n.type === 'containerNode');
-    
-    // If dropped inside a container, put it there, else unparent it
-    reparentNode(node.id, container ? container.id : undefined);
-  }, [reactFlow, reparentNode]);
+      const intersections = reactFlow.getIntersectingNodes(node);
+      const container = intersections.find((entry: Node) => entry.type === 'containerNode');
+      reparentNode(node.id, container?.id);
+    },
+    [reactFlow, reparentNode],
+  );
+
+  const createWorkspaceNode = useCallback(
+    (type: ModuleType, x: number, y: number): NetworkNode => ({
+      id: getId(),
+      type: isContainerModule(type) ? 'containerNode' : 'moduleNode',
+      position: { x, y },
+      data: {
+        type,
+        attributeName: createDefaultAttributeName(type, graph.nodes),
+        params: getDefaultParams(type),
+      },
+    }),
+    [graph.nodes],
+  );
 
   const onDrop = useCallback(
     (event: DragEvent) => {
       event.preventDefault();
+      event.stopPropagation();
 
       const type = event.dataTransfer.getData('application/reactflow') as ModuleType;
-      if (typeof type === 'undefined' || !type) {
+      if (!type) {
         return;
       }
 
-      if (!reactFlowInstance || !reactFlowWrapper.current) return;
-
-      const position = reactFlowInstance.screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
-
-      // Calculate auto-incremented attribute name based on type
-      const sameTypeNodes = nodes.filter(n => n.data.type === type);
-      const attrName = `${type.toLowerCase()}_${sameTypeNodes.length + 1}`;
-
-      const isContainer = ['Sequential', 'ModuleList', 'ModuleDict'].includes(type);
-
-      const newNode: NetworkNode = {
-        id: getId(),
-        type: isContainer ? 'containerNode' : 'moduleNode',
-        position,
-        data: { type, attributeName: attrName, params: getDefaultParams(type) },
-      };
-
-      addNode(newNode);
+      const position = getFlowPosition(event.clientX, event.clientY);
+      const node = createWorkspaceNode(type, position.x, position.y);
+      addNode(node);
+      setSelectedNode(node.id);
+      revealNode(position.x, position.y);
     },
-    [reactFlowInstance, addNode, nodes]
+    [addNode, createWorkspaceNode, getFlowPosition, revealNode, setSelectedNode],
   );
 
-  const onSelectionChange = useCallback((params: any) => {
-    if (params.nodes.length === 1) {
-      setSelectedNode(params.nodes[0].id);
-    } else {
+  const onSelectionChange = useCallback(
+    (params: OnSelectionChangeParams) => {
+      if (params.nodes.length === 1 && params.edges.length === 0) {
+        setSelectedNode(params.nodes[0].id);
+        return;
+      }
+
+      if (params.edges.length === 1 && params.nodes.length === 0) {
+        setSelectedEdge(params.edges[0].id);
+        return;
+      }
+
       setSelectedNode(null);
-    }
-  }, [setSelectedNode]);
+    },
+    [setSelectedEdge, setSelectedNode],
+  );
 
-  const onPaneContextMenu = useCallback((event: React.MouseEvent) => {
-    event.preventDefault();
-    if (!reactFlowInstance) return;
+  const onPaneContextMenu = useCallback(
+    (event: ReactMouseEvent<Element>) => {
+      event.preventDefault();
+      const bounds = reactFlowWrapper.current?.getBoundingClientRect();
+      if (!bounds) {
+        return;
+      }
 
-    const bounds = reactFlowWrapper.current?.getBoundingClientRect();
-    if (!bounds) return;
+      const position = getFlowPosition(event.clientX, event.clientY);
 
-    const position = reactFlowInstance.screenToFlowPosition({
-      x: event.clientX,
-      y: event.clientY,
-    });
+      setOmnibarPos({
+        x: event.clientX - bounds.left,
+        y: event.clientY - bounds.top,
+        flowX: position.x,
+        flowY: position.y,
+      });
+    },
+    [getFlowPosition],
+  );
 
-    setOmnibarPos({
-      x: event.clientX - bounds.left,
-      y: event.clientY - bounds.top,
-      flowX: position.x,
-      flowY: position.y
-    });
-  }, [reactFlowInstance]);
+  const onOmnibarAdd = useCallback(
+    (type: ModuleType) => {
+      if (!omnibarPos) {
+        return;
+      }
 
-  const onOmnibarAdd = useCallback((type: ModuleType) => {
-    if (!omnibarPos) return;
-
-    // Calculate auto-incremented attribute name based on type
-    const sameTypeNodes = nodes.filter(n => n.data.type === type);
-    const attrName = `${type.toLowerCase()}_${sameTypeNodes.length + 1}`;
-
-    const isContainer = ['Sequential', 'ModuleList', 'ModuleDict'].includes(type);
-
-    const newNode: NetworkNode = {
-      id: getId(),
-      type: isContainer ? 'containerNode' : 'moduleNode',
-      position: { x: omnibarPos.flowX, y: omnibarPos.flowY },
-      data: { type, attributeName: attrName, params: getDefaultParams(type) },
-    };
-
-    addNode(newNode);
-    setOmnibarPos(null);
-  }, [omnibarPos, addNode, nodes]);
+      const node = createWorkspaceNode(type, omnibarPos.flowX, omnibarPos.flowY);
+      addNode(node);
+      setSelectedNode(node.id);
+      revealNode(omnibarPos.flowX, omnibarPos.flowY);
+      setOmnibarPos(null);
+    },
+    [addNode, createWorkspaceNode, omnibarPos, revealNode, setSelectedNode],
+  );
 
   return (
-    <div className="flex-1 h-full w-full relative" ref={reactFlowWrapper} onClick={() => setOmnibarPos(null)}>
+    <div
+      className="flex-1 h-full w-full relative"
+      ref={reactFlowWrapper}
+      onClick={() => setOmnibarPos(null)}
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+    >
       {omnibarPos && (
-        <Omnibar 
-          position={{ x: omnibarPos.x, y: omnibarPos.y }} 
-          onSelect={onOmnibarAdd} 
-          onClose={() => setOmnibarPos(null)} 
+        <Omnibar
+          key={`${omnibarPos.flowX}-${omnibarPos.flowY}`}
+          position={{ x: omnibarPos.x, y: omnibarPos.y }}
+          onSelect={onOmnibarAdd}
+          onClose={() => setOmnibarPos(null)}
         />
       )}
 
@@ -168,35 +243,40 @@ function CanvasInner() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        isValidConnection={isValidConnection}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
-        onInit={setReactFlowInstance}
-        onDrop={onDrop}
-        onDragOver={onDragOver}
         onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
         onPaneContextMenu={onPaneContextMenu}
-        onEdgeClick={(_evt, edge) => setSelectedEdge(edge.id)}
+        onEdgeClick={(_event, edge) => setSelectedEdge(edge.id)}
         nodeTypes={nodeTypes}
-        fitView
+        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
       >
         <Background color="#ffffff" gap={24} size={1} style={{ opacity: 0.05 }} />
-        <Controls 
-          className="bg-panel border-border shadow-2xl rounded-lg overflow-hidden flex flex-col items-center !m-4" 
+        <Controls
+          className="bg-panel border-border shadow-2xl rounded-lg overflow-hidden flex flex-col items-center !m-4"
           showInteractive={false}
           position="bottom-left"
         />
-        <MiniMap 
-          className="!bg-panel !border-border !shadow-2xl rounded-xl overflow-hidden !m-4" 
+        <MiniMap
+          className="!bg-panel !border-border !shadow-2xl rounded-xl overflow-hidden !m-4"
           style={{ width: 140, height: 100 }}
-          maskColor="rgba(0, 0, 0, 0.4)" 
-          nodeColor={(node: any) => {
+          maskColor="rgba(0, 0, 0, 0.4)"
+          nodeColor={(node: { data?: Partial<ModuleData> }) => {
             const type = node.data?.type;
             const connected = node.data?.connected;
+            if (!type) {
+              return '#EE4C2C';
+            }
+
             const alwaysColored = type === 'Input' || type === 'Output';
-            if (!connected && !alwaysColored) return '#4B5563';
-            return TYPE_COLORS[type as ModuleType] ?? '#EE4C2C';
-          }} 
+            if (!connected && !alwaysColored) {
+              return '#4B5563';
+            }
+
+            return getLayerColor(type);
+          }}
         />
       </ReactFlow>
     </div>
@@ -209,55 +289,4 @@ export default function Canvas() {
       <CanvasInner />
     </ReactFlowProvider>
   );
-}
-
-function getDefaultParams(type: ModuleType) {
-  switch (type) {
-    // Convolutional
-    case 'Conv1d': return { in_channels: 64, out_channels: 128, kernel_size: 3, stride: 1, padding: 1 };
-    case 'Conv2d': return { in_channels: 3, out_channels: 64, kernel_size: 3, stride: 1, padding: 1 };
-    case 'Conv3d': return { in_channels: 16, out_channels: 32, kernel_size: 3, stride: 1, padding: 1 };
-    case 'ConvTranspose1d': return { in_channels: 128, out_channels: 64, kernel_size: 3, stride: 1, padding: 1 };
-    case 'ConvTranspose2d': return { in_channels: 64, out_channels: 3, kernel_size: 3, stride: 1, padding: 1 };
-    case 'ConvTranspose3d': return { in_channels: 32, out_channels: 16, kernel_size: 3, stride: 1, padding: 1 };
-
-    // Linear
-    case 'Linear': return { in_features: 512, out_features: 10 };
-    case 'Bilinear': return { in1_features: 128, in2_features: 128, out_features: 64 };
-
-    // Activations
-    case 'ReLU': case 'ReLU6': return { inplace: true };
-    case 'LeakyReLU': return { negative_slope: 0.01, inplace: true };
-    case 'PReLU': return { num_parameters: 1 };
-    case 'ELU': return { alpha: 1.0, inplace: true };
-    case 'SELU': return { inplace: true };
-    case 'GELU': return { approximate: 'none' };
-    case 'Sigmoid': case 'Tanh': return {};
-    case 'Softmax': case 'LogSoftmax': return { dim: 1 };
-
-    // Pooling
-    case 'MaxPool1d': case 'AvgPool1d': return { kernel_size: 2, stride: 2, padding: 0 };
-    case 'MaxPool2d': case 'AvgPool2d': return { kernel_size: 2, stride: 2, padding: 0 };
-    case 'MaxPool3d': case 'AvgPool3d': return { kernel_size: 2, stride: 2, padding: 0 };
-    case 'AdaptiveAvgPool1d': return { output_size: 1 };
-    case 'AdaptiveAvgPool2d': return { output_size: '[7, 7]' };
-    case 'AdaptiveAvgPool3d': return { output_size: '[7, 7, 7]' };
-
-    // Normalization
-    case 'BatchNorm1d': return { num_features: 64 };
-    case 'BatchNorm2d': return { num_features: 64 };
-    case 'BatchNorm3d': return { num_features: 64 };
-    case 'LayerNorm': return { normalized_shape: 64 };
-    case 'GroupNorm': return { num_groups: 32, num_channels: 64 };
-    case 'InstanceNorm1d': case 'InstanceNorm2d': case 'InstanceNorm3d': return { num_features: 64 };
-
-    // Utility
-    case 'Dropout': case 'Dropout2d': case 'Dropout3d': case 'AlphaDropout': return { p: 0.5 };
-    case 'Flatten': return { start_dim: 1, end_dim: -1 };
-    case 'Unflatten': return { dim: 1, unflattened_size: '[64, 7, 7]' };
-    case 'Upsample': return { size: '[224, 224]', mode: 'bilinear', align_corners: true };
-
-    case 'Input': return { shape: '[B, 3, 224, 224]' };
-    default: return {};
-  }
 }
