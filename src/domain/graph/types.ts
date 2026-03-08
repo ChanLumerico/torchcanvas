@@ -27,6 +27,7 @@ export interface GraphNode {
   attributeName: string;
   params: LayerParams;
   containerId?: string;
+  containerOrder?: number;
 }
 
 export interface GraphEdge {

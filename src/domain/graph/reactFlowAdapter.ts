@@ -11,6 +11,12 @@ import type {
   GraphNodePresentationMeta,
   GraphPosition,
 } from './types';
+import {
+  buildContainerLayoutIndex,
+  getContainerChildren,
+  getSequentialDerivedEdgePairs,
+  isSequentialChild,
+} from './utils';
 
 export interface ModuleData {
   type: ModuleType;
@@ -19,10 +25,23 @@ export interface ModuleData {
   outputShape?: string;
   shapeError?: boolean;
   connected?: boolean;
+  compact?: boolean;
+  parentContainerType?: ModuleType;
+  hideHandles?: boolean;
+  containerChildCount?: number;
+  isDropTarget?: boolean;
+  dropPreviewIndex?: number | null;
+  pulseContainer?: boolean;
+  pulseChild?: boolean;
 }
 
 export type NetworkNode = ReactFlowNode<ModuleData>;
-export type Edge = ReactFlowEdge;
+export interface EdgeData {
+  derived?: boolean;
+  readOnly?: boolean;
+}
+
+export type Edge = ReactFlowEdge<EdgeData>;
 const DEFAULT_EDGE_COLOR = '#EE4C2C';
 
 function getStoredDimensions(
@@ -59,6 +78,10 @@ function createEdgeStyle(color: string): CSSProperties {
     stroke: color,
     strokeWidth: 2,
   };
+}
+
+function withAlpha(color: string, alphaHex: string): string {
+  return color.startsWith('#') && color.length === 7 ? `${color}${alphaHex}` : color;
 }
 
 export function createGraphNodeFromReactFlowNode(node: NetworkNode): {
@@ -101,19 +124,39 @@ export function graphToReactFlowNodes(
   layout: GraphLayoutState,
   metaByNodeId: Record<string, GraphNodePresentationMeta>,
 ): NetworkNode[] {
+  const nodeMap = new Map(graph.nodes.map((node) => [node.id, node] as const));
+  const containerChildren = getContainerChildren(graph);
+  const containerLayoutIndex = buildContainerLayoutIndex(graph);
+
   return graph.nodes.map((node) => {
     const meta = metaByNodeId[node.id];
     const isContainer = isContainerModule(node.moduleType);
-    const dimensions = getStoredDimensions(node.id, layout);
+    const parentNode = node.containerId ? nodeMap.get(node.containerId) : undefined;
+    const compact = Boolean(node.containerId);
+    const childLayout = compact ? containerLayoutIndex.childLayoutsByNodeId.get(node.id) ?? null : null;
+    const dimensions = isContainer
+      ? containerLayoutIndex.dimensionsByNodeId.get(node.id)
+      : compact
+        ? childLayout?.dimensions
+        : getStoredDimensions(node.id, layout);
 
     return {
       id: node.id,
       type: isContainer ? 'containerNode' : 'moduleNode',
-      position: toRelativePosition(node, layout),
+      position:
+        compact && childLayout
+          ? childLayout.position
+          : toRelativePosition(node, layout),
       width: dimensions?.width,
       height: dimensions?.height,
+      style: dimensions
+        ? {
+            width: dimensions.width,
+            height: dimensions.height,
+          }
+        : undefined,
       parentNode: node.containerId,
-      extent: node.containerId ? 'parent' : undefined,
+      draggable: true,
       selected: layout.selection.nodeId === node.id,
       data: {
         type: node.moduleType,
@@ -122,6 +165,10 @@ export function graphToReactFlowNodes(
         outputShape: meta?.outputShape,
         shapeError: meta?.shapeError,
         connected: meta?.connected,
+        compact: childLayout?.presentation.compact ?? compact,
+        parentContainerType: parentNode?.moduleType,
+        hideHandles: childLayout?.presentation.hideHandles ?? isSequentialChild(graph, node.id),
+        containerChildCount: isContainer ? (containerChildren.get(node.id)?.length ?? 0) : undefined,
       },
     };
   });
@@ -144,7 +191,44 @@ export function graphToReactFlowEdges(
       animated: true,
       interactionWidth: 20,
       selected: layout.selection.edgeId === edge.id,
+      data: {
+        derived: false,
+      },
       style: createEdgeStyle(sourceNode ? getLayerColor(sourceNode.moduleType) : DEFAULT_EDGE_COLOR),
+    };
+  });
+}
+
+export function graphToDerivedSequentialEdges(
+  graph: GraphModel,
+): Edge[] {
+  const nodeMap = new Map(graph.nodes.map((node) => [node.id, node] as const));
+
+  return getSequentialDerivedEdgePairs(graph).map((edge) => {
+    const containerNode = nodeMap.get(edge.containerId);
+    const containerColor = containerNode ? getLayerColor(containerNode.moduleType) : DEFAULT_EDGE_COLOR;
+
+    return {
+      id: `derived:${edge.containerId}:${edge.sourceId}:${edge.targetId}`,
+      source: edge.sourceId,
+      target: edge.targetId,
+      sourceHandle: 'sequential-bottom',
+      targetHandle: 'sequential-top',
+      type: 'straight',
+      className: 'sequential-derived-edge',
+      animated: false,
+      selectable: false,
+      focusable: false,
+      deletable: false,
+      interactionWidth: 0,
+      data: {
+        derived: true,
+        readOnly: true,
+      },
+      style: {
+        stroke: withAlpha(containerColor, 'CC'),
+        strokeWidth: 2.25,
+      },
     };
   });
 }

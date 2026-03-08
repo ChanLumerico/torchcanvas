@@ -28,12 +28,15 @@ import {
   cloneGraphModel,
   createEmptyGraphLayout,
   createEmptyGraphModel,
+  getOrderedContainerChildren,
+  normalizeWorkspaceGraphLayout,
   omitDimensions,
   omitPositions,
 } from '../domain/graph/utils';
+import { getNodeBehavior } from '../domain/nodes';
 import { createProjectComparisonSignature } from '../domain/project/projectFile';
 import { canConnectGraphNodes } from '../domain/graph/validation';
-import { getLayerDefinition, type LayerParamValue, type ModuleType } from '../domain/layers';
+import type { LayerParamValue, ModuleType } from '../domain/layers';
 
 const MAX_HISTORY = 50;
 
@@ -64,13 +67,172 @@ function createSnapshot(graph: GraphModel, layout: GraphLayoutState): GraphSnaps
   };
 }
 
-function isContainerIdValid(graph: GraphModel, nodeId: string | undefined): nodeId is string {
-  if (!nodeId) {
+function getNormalizedWorkspace(graph: GraphModel, layout: GraphLayoutState) {
+  return normalizeWorkspaceGraphLayout(graph, layout);
+}
+
+function isNodeDescendantOf(graph: GraphModel, nodeId: string, ancestorId: string): boolean {
+  const nodeMap = new Map(graph.nodes.map((node) => [node.id, node] as const));
+  let currentNode = nodeMap.get(nodeId);
+
+  while (currentNode?.containerId) {
+    if (currentNode.containerId === ancestorId) {
+      return true;
+    }
+
+    currentNode = nodeMap.get(currentNode.containerId);
+  }
+
+  return false;
+}
+
+function canNestInContainer(graph: GraphModel, childId: string, parentId: string): boolean {
+  if (childId === parentId || isNodeDescendantOf(graph, parentId, childId)) {
     return false;
   }
 
-  const node = graph.nodes.find((candidate) => candidate.id === nodeId);
-  return !!node && getLayerDefinition(node.moduleType).kind === 'container';
+  const childNode = graph.nodes.find((candidate) => candidate.id === childId);
+  const parentNode = graph.nodes.find((candidate) => candidate.id === parentId);
+  if (!childNode || !parentNode) {
+    return false;
+  }
+
+  const childBehavior = getNodeBehavior(childNode.moduleType);
+  const parentBehavior = getNodeBehavior(parentNode.moduleType);
+
+  return childBehavior.canBeNestedIn(parentBehavior) && parentBehavior.canAcceptChild(childBehavior);
+}
+
+function omitEdgesForNodeIds(graph: GraphModel, nodeIds: Set<string>): GraphModel {
+  return {
+    ...graph,
+    edges: graph.edges.filter(
+      (edge) => !nodeIds.has(edge.sourceId) && !nodeIds.has(edge.targetId),
+    ),
+  };
+}
+
+function collectNodeSubtreeIds(graph: GraphModel, rootNodeId: string): Set<string> {
+  const subtreeIds = new Set<string>([rootNodeId]);
+  let didExpand = true;
+
+  while (didExpand) {
+    didExpand = false;
+
+    graph.nodes.forEach((node) => {
+      if (node.containerId && subtreeIds.has(node.containerId) && !subtreeIds.has(node.id)) {
+        subtreeIds.add(node.id);
+        didExpand = true;
+      }
+    });
+  }
+
+  return subtreeIds;
+}
+
+function reorderContainerChildren(
+  graph: GraphModel,
+  containerId: string,
+  orderedChildIds: string[],
+): GraphModel {
+  const nextOrderByNodeId = new Map(
+    orderedChildIds.map((childId, index) => [childId, index] as const),
+  );
+
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (node.containerId !== containerId) {
+        return node;
+      }
+
+      return {
+        ...node,
+        containerOrder: nextOrderByNodeId.get(node.id) ?? 0,
+      };
+    }),
+  };
+}
+
+function reparentGraphNode(
+  graph: GraphModel,
+  childId: string,
+  parentId: string | undefined,
+  insertAt?: number,
+): GraphModel {
+  const childNode = graph.nodes.find((candidate) => candidate.id === childId);
+  if (!childNode) {
+    return graph;
+  }
+
+  const previousParentId = childNode.containerId;
+  const nextParentId = parentId && canNestInContainer(graph, childId, parentId) ? parentId : undefined;
+  const previousParentNode = previousParentId
+    ? graph.nodes.find((candidate) => candidate.id === previousParentId)
+    : undefined;
+  const nextParentNode = nextParentId
+    ? graph.nodes.find((candidate) => candidate.id === nextParentId)
+    : undefined;
+  const removeImplicitChildEdges =
+    (previousParentNode && getNodeBehavior(previousParentNode.moduleType).usesImplicitChildExecution()) ||
+    (nextParentNode && getNodeBehavior(nextParentNode.moduleType).usesImplicitChildExecution());
+
+  let nextGraph: GraphModel = {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (node.id !== childId) {
+        return node;
+      }
+
+      if (!nextParentId) {
+        return {
+          ...node,
+          containerId: undefined,
+          containerOrder: undefined,
+        };
+      }
+
+      return {
+        ...node,
+        containerId: nextParentId,
+        containerOrder: typeof insertAt === 'number' ? insertAt : Number.MAX_SAFE_INTEGER,
+      };
+    }),
+  };
+
+  if (removeImplicitChildEdges) {
+    nextGraph = omitEdgesForNodeIds(nextGraph, collectNodeSubtreeIds(nextGraph, childId));
+  }
+
+  const affectedParents = new Set<string>();
+  if (previousParentId) {
+    affectedParents.add(previousParentId);
+  }
+  if (nextParentId) {
+    affectedParents.add(nextParentId);
+  }
+
+  affectedParents.forEach((affectedParentId) => {
+    let childIds = getOrderedContainerChildren(nextGraph, affectedParentId).map((node) => node.id);
+    if (affectedParentId === nextParentId) {
+      childIds = childIds.filter((currentChildId) => currentChildId !== childId);
+      const safeInsertAt = Math.max(0, Math.min(insertAt ?? childIds.length, childIds.length));
+      childIds.splice(safeInsertAt, 0, childId);
+    }
+
+    nextGraph = reorderContainerChildren(nextGraph, affectedParentId, childIds);
+  });
+
+  return nextGraph;
+}
+
+interface AddNodeOptions {
+  parentId?: string;
+  insertAt?: number;
+}
+
+interface ReparentNodeOptions {
+  insertAt?: number;
 }
 
 function clearRemovedContainers(graph: GraphModel, removedNodeIds: Set<string>): GraphModel {
@@ -114,14 +276,14 @@ interface WorkspaceState {
   isValidConnection: (connection: Connection) => boolean;
   onEdgesDelete: (edges: Edge[]) => void;
   onNodesDelete: (nodes: NetworkNode[]) => void;
-  addNode: (node: NetworkNode) => void;
+  addNode: (node: NetworkNode, options?: AddNodeOptions) => void;
   deleteNodeById: (id: string) => void;
   deleteEdgeById: (id: string) => void;
   setSelectedNode: (id: string | null) => void;
   setSelectedEdge: (id: string | null) => void;
   updateNodeParams: (id: string, params: Record<string, LayerParamValue>) => void;
   updateNodeAttributeName: (id: string, name: string) => void;
-  reparentNode: (childId: string, parentId: string | undefined) => void;
+  reparentNode: (childId: string, parentId: string | undefined, options?: ReparentNodeOptions) => void;
   setModelName: (name: string) => void;
 }
 
@@ -140,10 +302,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     historyIndex = get().historyIndex,
     persistedProjectBaseline = get().persistedProjectBaseline,
   ) {
-    const currentBaseline = createProjectComparisonSignature(graph, layout);
+    const normalizedWorkspace = getNormalizedWorkspace(graph, layout);
+    const currentBaseline = createProjectComparisonSignature(
+      normalizedWorkspace.graph,
+      normalizedWorkspace.layout,
+    );
 
     set({
-      ...materializeWorkspace(graph, layout),
+      ...materializeWorkspace(normalizedWorkspace.graph, normalizedWorkspace.layout),
       history,
       historyIndex,
       canUndo: historyIndex > 0,
@@ -155,10 +321,19 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 
   function commitWorkspace(graph: GraphModel, layout: GraphLayoutState) {
     const state = get();
+    const normalizedWorkspace = getNormalizedWorkspace(graph, layout);
     const trimmedHistory = state.history.slice(0, state.historyIndex + 1);
-    const nextHistory = [...trimmedHistory, createSnapshot(graph, layout)].slice(-MAX_HISTORY);
+    const nextHistory = [
+      ...trimmedHistory,
+      createSnapshot(normalizedWorkspace.graph, normalizedWorkspace.layout),
+    ].slice(-MAX_HISTORY);
     const nextHistoryIndex = nextHistory.length - 1;
-    applyWorkspaceState(graph, layout, nextHistory, nextHistoryIndex);
+    applyWorkspaceState(
+      normalizedWorkspace.graph,
+      normalizedWorkspace.layout,
+      nextHistory,
+      nextHistoryIndex,
+    );
   }
 
   return {
@@ -224,20 +399,22 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     },
 
     replaceWorkspace: (graph, layout) => {
-      const normalizedGraph = cloneGraphModel(graph);
-      const normalizedLayout: GraphLayoutState = {
-        ...cloneGraphLayoutState(layout),
-        selection: { nodeId: null, edgeId: null },
-      };
+      const normalizedWorkspace = getNormalizedWorkspace(
+        cloneGraphModel(graph),
+        {
+          ...cloneGraphLayoutState(layout),
+          selection: { nodeId: null, edgeId: null },
+        },
+      );
       const persistedProjectBaseline = createProjectComparisonSignature(
-        normalizedGraph,
-        normalizedLayout,
+        normalizedWorkspace.graph,
+        normalizedWorkspace.layout,
       );
 
       applyWorkspaceState(
-        normalizedGraph,
-        normalizedLayout,
-        [createSnapshot(normalizedGraph, normalizedLayout)],
+        normalizedWorkspace.graph,
+        normalizedWorkspace.layout,
+        [createSnapshot(normalizedWorkspace.graph, normalizedWorkspace.layout)],
         0,
         persistedProjectBaseline,
       );
@@ -245,14 +422,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 
     markPersistedBaseline: () => {
       const state = get();
-      const persistedProjectBaseline = createProjectComparisonSignature(
+      const normalizedWorkspace = getNormalizedWorkspace(
         state.graph,
         state.layout,
       );
+      const persistedProjectBaseline = createProjectComparisonSignature(
+        normalizedWorkspace.graph,
+        normalizedWorkspace.layout,
+      );
 
       applyWorkspaceState(
-        state.graph,
-        state.layout,
+        normalizedWorkspace.graph,
+        normalizedWorkspace.layout,
         state.history,
         state.historyIndex,
         persistedProjectBaseline,
@@ -293,10 +474,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
         ...state.layout,
         positionsById: nextPositions,
         dimensionsById: nextDimensions,
-        selection: {
-          nodeId: selectedNodes.length === 1 ? selectedNodes[0].id : null,
-          edgeId: selectedNodes.length > 0 ? null : state.layout.selection.edgeId,
-        },
+        selection: { nodeId: null, edgeId: null },
+      };
+      nextLayout.selection = {
+        nodeId: selectedNodes.length === 1 ? selectedNodes[0].id : null,
+        edgeId: selectedNodes.length > 0 ? null : state.layout.selection.edgeId,
       };
 
       applyWorkspaceState(state.graph, nextLayout);
@@ -388,14 +570,26 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       commitWorkspace(nextGraph, nextLayout);
     },
 
-    addNode: (node) => {
+    addNode: (node, options) => {
       const state = get();
       const { graphNode, position } = createGraphNodeFromReactFlowNode(node);
+      const nextGraph = options?.parentId
+        ? reparentGraphNode(
+            {
+              ...state.graph,
+              nodes: [...state.graph.nodes, graphNode],
+            },
+            node.id,
+            options.parentId,
+            options.insertAt,
+          )
+        : {
+            ...state.graph,
+            nodes: [...state.graph.nodes, graphNode],
+          };
+
       commitWorkspace(
-        {
-          ...state.graph,
-          nodes: [...state.graph.nodes, graphNode],
-        },
+        nextGraph,
         {
           ...state.layout,
           positionsById: {
@@ -485,20 +679,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       );
     },
 
-    reparentNode: (childId, parentId) => {
+    reparentNode: (childId, parentId, options) => {
       const state = get();
-      const resolvedParentId =
-        parentId && parentId !== childId && isContainerIdValid(state.graph, parentId)
-          ? parentId
-          : undefined;
 
       commitWorkspace(
-        {
-          ...state.graph,
-          nodes: state.graph.nodes.map((node) =>
-            node.id === childId ? { ...node, containerId: resolvedParentId } : node,
-          ),
-        },
+        reparentGraphNode(state.graph, childId, parentId && parentId !== childId ? parentId : undefined, options?.insertAt),
         state.layout,
       );
     },

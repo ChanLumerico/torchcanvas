@@ -1,4 +1,4 @@
-import { ArrowRight, Boxes, GitMerge, Network } from 'lucide-react';
+import { ArrowRight, Boxes, Network, ScanSearch } from 'lucide-react';
 
 export default function LandingPage({ onEnterWorkspace }: { onEnterWorkspace: () => void }) {
   return (
@@ -102,9 +102,9 @@ export default function LandingPage({ onEnterWorkspace }: { onEnterWorkspace: ()
           </div>
           <div className="p-8 rounded-2xl glass-panel relative group overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-br from-red-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-            <GitMerge className="w-8 h-8 text-red-400 mb-5 relative z-10" />
-            <h3 className="text-lg font-bold text-white mb-3 relative z-10">Visual Routing</h3>
-            <p className="text-sm text-textMuted leading-relaxed relative z-10">Connect multidimensional tensors effortlessly. Catch shape mismatches visually before running your script.</p>
+            <ScanSearch className="w-8 h-8 text-red-400 mb-5 relative z-10" />
+            <h3 className="text-lg font-bold text-white mb-3 relative z-10">Graph Validation</h3>
+            <p className="text-sm text-textMuted leading-relaxed relative z-10">Catch invalid container wiring, missing inputs, and graph integrity issues before exporting your model code.</p>
           </div>
           <div className="p-8 rounded-2xl glass-panel relative group overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-br from-teal-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />

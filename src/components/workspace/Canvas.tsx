@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, MouseEvent as ReactMouseEvent } from 'react';
 import ReactFlow, {
   Background,
@@ -8,7 +8,6 @@ import ReactFlow, {
   useReactFlow,
 } from 'reactflow';
 import type {
-  Node,
   OnSelectionChangeParams,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -20,7 +19,11 @@ import {
   isContainerModule,
   type ModuleType,
 } from '../../domain/layers';
-import type { ModuleData } from '../../domain/graph/reactFlowAdapter';
+import {
+  graphToDerivedSequentialEdges,
+  type ModuleData,
+} from '../../domain/graph/reactFlowAdapter';
+import { getContainerDropTargetAtPosition, type ContainerDropTarget } from '../../domain/graph/utils';
 import { useWorkspaceStore, type NetworkNode } from '../../store/workspaceStore';
 import ModuleNode from './ModuleNode';
 import ContainerNode from './ContainerNode';
@@ -46,6 +49,7 @@ function CanvasInner() {
   } | null>(null);
 
   const graph = useWorkspaceStore((state) => state.graph);
+  const positionsById = useWorkspaceStore((state) => state.layout.positionsById);
   const nodes = useWorkspaceStore((state) => state.nodes);
   const edges = useWorkspaceStore((state) => state.edges);
   const onNodesChange = useWorkspaceStore((state) => state.onNodesChange);
@@ -58,6 +62,44 @@ function CanvasInner() {
   const setSelectedNode = useWorkspaceStore((state) => state.setSelectedNode);
   const setSelectedEdge = useWorkspaceStore((state) => state.setSelectedEdge);
   const reparentNode = useWorkspaceStore((state) => state.reparentNode);
+  const [containerDropTarget, setContainerDropTarget] = useState<ContainerDropTarget | null>(null);
+  const [recentContainerInsertion, setRecentContainerInsertion] = useState<{
+    containerId: string;
+    childId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!recentContainerInsertion) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setRecentContainerInsertion(null);
+    }, 800);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [recentContainerInsertion]);
+
+  const derivedEdges = useMemo(() => graphToDerivedSequentialEdges(graph), [graph]);
+  const displayedEdges = useMemo(() => [...edges, ...derivedEdges], [derivedEdges, edges]);
+  const displayedNodes = useMemo(
+    () =>
+      nodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          isDropTarget:
+            node.type === 'containerNode' && containerDropTarget?.containerId === node.id,
+          dropPreviewIndex:
+            node.type === 'containerNode' && containerDropTarget?.containerId === node.id
+              ? containerDropTarget.insertAt
+              : null,
+          pulseContainer: recentContainerInsertion?.containerId === node.id,
+          pulseChild: recentContainerInsertion?.childId === node.id,
+        },
+      })),
+    [containerDropTarget, nodes, recentContainerInsertion],
+  );
 
   const getFlowPosition = useCallback(
     (clientX: number, clientY: number) => {
@@ -96,6 +138,27 @@ function CanvasInner() {
     },
     [reactFlow],
   );
+
+  const resolveContainerDropTarget = useCallback(
+    (clientX: number, clientY: number, candidateType?: ModuleType, excludeNodeId?: string) => {
+      if (!candidateType) {
+        return null;
+      }
+
+      return getContainerDropTargetAtPosition(
+        graph,
+        { positionsById },
+        getFlowPosition(clientX, clientY),
+        candidateType,
+        excludeNodeId,
+      );
+    },
+    [getFlowPosition, graph, positionsById],
+  );
+
+  const triggerContainerInsertionPulse = useCallback((containerId: string, childId: string) => {
+    setRecentContainerInsertion({ containerId, childId });
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -139,22 +202,49 @@ function CanvasInner() {
     return () => window.removeEventListener(TORCHCANVAS_FIT_VIEW_EVENT, handleFitView);
   }, [reactFlow]);
 
-  const onDragOver = useCallback((event: DragEvent) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
+  const onDragOver = useCallback(
+    (event: DragEvent) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+
+      const type = event.dataTransfer.getData('application/reactflow') as ModuleType;
+      setContainerDropTarget(resolveContainerDropTarget(event.clientX, event.clientY, type));
+    },
+    [resolveContainerDropTarget],
+  );
+
+  const onDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (!nextTarget || !reactFlowWrapper.current?.contains(nextTarget as Node)) {
+      setContainerDropTarget(null);
+    }
   }, []);
 
+  const onNodeDrag = useCallback(
+    (event: ReactMouseEvent, node: NetworkNode) => {
+      setContainerDropTarget(
+        resolveContainerDropTarget(event.clientX, event.clientY, node.data.type, node.id),
+      );
+    },
+    [resolveContainerDropTarget],
+  );
+
   const onNodeDragStop = useCallback(
-    (_event: ReactMouseEvent, node: NetworkNode) => {
-      if (node.type === 'containerNode') {
-        return;
+    (event: ReactMouseEvent, node: NetworkNode) => {
+      const target =
+        containerDropTarget ??
+        resolveContainerDropTarget(event.clientX, event.clientY, node.data.type, node.id);
+
+      if (target) {
+        reparentNode(node.id, target.containerId, { insertAt: target.insertAt });
+        triggerContainerInsertionPulse(target.containerId, node.id);
+      } else if (node.parentNode) {
+        reparentNode(node.id, undefined);
       }
 
-      const intersections = reactFlow.getIntersectingNodes(node);
-      const container = intersections.find((entry: Node) => entry.type === 'containerNode');
-      reparentNode(node.id, container?.id);
+      setContainerDropTarget(null);
     },
-    [reactFlow, reparentNode],
+    [containerDropTarget, reparentNode, resolveContainerDropTarget, triggerContainerInsertionPulse],
   );
 
   const createWorkspaceNode = useCallback(
@@ -178,16 +268,38 @@ function CanvasInner() {
 
       const type = event.dataTransfer.getData('application/reactflow') as ModuleType;
       if (!type) {
+        setContainerDropTarget(null);
         return;
       }
 
       const position = getFlowPosition(event.clientX, event.clientY);
+      const target = resolveContainerDropTarget(event.clientX, event.clientY, type);
       const node = createWorkspaceNode(type, position.x, position.y);
-      addNode(node);
+      addNode(
+        node,
+        target
+          ? {
+              parentId: target.containerId,
+              insertAt: target.insertAt,
+            }
+          : undefined,
+      );
       setSelectedNode(node.id);
+      if (target) {
+        triggerContainerInsertionPulse(target.containerId, node.id);
+      }
+      setContainerDropTarget(null);
       revealNode(position.x, position.y);
     },
-    [addNode, createWorkspaceNode, getFlowPosition, revealNode, setSelectedNode],
+    [
+      addNode,
+      createWorkspaceNode,
+      getFlowPosition,
+      revealNode,
+      resolveContainerDropTarget,
+      setSelectedNode,
+      triggerContainerInsertionPulse,
+    ],
   );
 
   const onSelectionChange = useCallback(
@@ -234,12 +346,29 @@ function CanvasInner() {
       }
 
       const node = createWorkspaceNode(type, omnibarPos.flowX, omnibarPos.flowY);
-      addNode(node);
+      const target = getContainerDropTargetAtPosition(
+        graph,
+        { positionsById },
+        { x: omnibarPos.flowX, y: omnibarPos.flowY },
+        type,
+      );
+      addNode(
+        node,
+        target
+          ? {
+              parentId: target.containerId,
+              insertAt: target.insertAt,
+            }
+          : undefined,
+      );
       setSelectedNode(node.id);
+      if (target) {
+        triggerContainerInsertionPulse(target.containerId, node.id);
+      }
       revealNode(omnibarPos.flowX, omnibarPos.flowY);
       setOmnibarPos(null);
     },
-    [addNode, createWorkspaceNode, omnibarPos, revealNode, setSelectedNode],
+    [addNode, createWorkspaceNode, graph, omnibarPos, positionsById, revealNode, setSelectedNode, triggerContainerInsertionPulse],
   );
 
   return (
@@ -249,6 +378,7 @@ function CanvasInner() {
       onClick={() => setOmnibarPos(null)}
       onDrop={onDrop}
       onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
     >
       {omnibarPos && (
         <Omnibar
@@ -260,18 +390,25 @@ function CanvasInner() {
       )}
 
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={displayedNodes}
+        edges={displayedEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         isValidConnection={isValidConnection}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
+        onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
         onPaneContextMenu={onPaneContextMenu}
-        onEdgeClick={(_event, edge) => setSelectedEdge(edge.id)}
+        onEdgeClick={(_event, edge) => {
+          if (edge.data?.derived) {
+            return;
+          }
+
+          setSelectedEdge(edge.id);
+        }}
         nodeTypes={nodeTypes}
         defaultViewport={{ x: 0, y: 0, zoom: 1 }}
       >

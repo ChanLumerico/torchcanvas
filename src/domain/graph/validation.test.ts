@@ -74,18 +74,23 @@ describe('validateGraphConnection', () => {
     const graph = createGraph(
       [
         { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 64]' } },
-        { id: 'concat', moduleType: 'Concat', attributeName: 'concat', params: { dim: 1 } },
+        {
+          id: 'fusion',
+          moduleType: 'Bilinear',
+          attributeName: 'fusion',
+          params: { in1_features: 64, in2_features: 64, out_features: 32 },
+        },
         { id: 'relu', moduleType: 'ReLU', attributeName: 'relu', params: { inplace: true } },
         { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
       ],
       [
-        { id: 'edge-1', sourceId: 'input', targetId: 'concat' },
-        { id: 'edge-2', sourceId: 'concat', targetId: 'relu' },
+        { id: 'edge-1', sourceId: 'input', targetId: 'fusion' },
+        { id: 'edge-2', sourceId: 'fusion', targetId: 'relu' },
         { id: 'edge-3', sourceId: 'relu', targetId: 'output' },
       ],
     );
 
-    expect(validateGraphConnection(graph, { source: 'relu', target: 'concat' })).toEqual({
+    expect(validateGraphConnection(graph, { source: 'relu', target: 'fusion' })).toEqual({
       isValid: false,
       code: 'cycle',
     });
@@ -115,6 +120,30 @@ describe('validateGraphConnection', () => {
       code: 'non-callable-container',
     });
   });
+
+  it('rejects direct connections to sequential child nodes', () => {
+    const graph = createGraph([
+      { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 64]' } },
+      { id: 'seq', moduleType: 'Sequential', attributeName: 'seq', params: {} },
+      {
+        id: 'relu',
+        moduleType: 'ReLU',
+        attributeName: 'relu',
+        params: { inplace: true },
+        containerId: 'seq',
+        containerOrder: 0,
+      },
+    ]);
+
+    expect(validateGraphConnection(graph, { source: 'input', target: 'relu' })).toEqual({
+      isValid: false,
+      code: 'container-child-endpoint',
+    });
+    expect(validateGraphConnection(graph, { source: 'relu', target: 'seq' })).toEqual({
+      isValid: false,
+      code: 'container-child-endpoint',
+    });
+  });
 });
 
 describe('validateGraphForCompilation', () => {
@@ -134,5 +163,29 @@ describe('validateGraphForCompilation', () => {
         expect.objectContaining({ code: 'missing-inputs', nodeId: 'linear' }),
       ]),
     );
+  });
+
+  it('accepts sequential children without manual graph edges', () => {
+    const graph = createGraph(
+      [
+        { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 64]' } },
+        { id: 'seq', moduleType: 'Sequential', attributeName: 'seq', params: {} },
+        {
+          id: 'linear',
+          moduleType: 'Linear',
+          attributeName: 'linear',
+          params: { in_features: 64, out_features: 32 },
+          containerId: 'seq',
+          containerOrder: 0,
+        },
+        { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
+      ],
+      [
+        { id: 'edge-1', sourceId: 'input', targetId: 'seq' },
+        { id: 'edge-2', sourceId: 'seq', targetId: 'output' },
+      ],
+    );
+
+    expect(validateGraphForCompilation(graph)).toEqual([]);
   });
 });

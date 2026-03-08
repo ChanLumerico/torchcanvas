@@ -29,6 +29,14 @@
   .glass-button {
     @apply bg-white/5 hover:bg-white/10 active:bg-white/5 border border-white/5 backdrop-blur-sm text-textMain rounded-md transition-all;
   }
+
+  .container-shell-pulse {
+    animation: container-shell-pulse 0.7s ease-out;
+  }
+
+  .container-chip-enter {
+    animation: container-chip-enter 0.5s ease-out;
+  }
 }
 
 /* Custom overwrites for ReactFlow Default UI (Un-purged) */
@@ -49,4 +57,30 @@
 }
 .react-flow__controls-button:hover svg {
   @apply !fill-[#EE4C2C];
+}
+
+@keyframes container-shell-pulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(238, 76, 44, 0.35);
+  }
+  40% {
+    transform: scale(1.01);
+    box-shadow: 0 0 0 8px rgba(238, 76, 44, 0.08);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(238, 76, 44, 0);
+  }
+}
+
+@keyframes container-chip-enter {
+  0% {
+    opacity: 0.35;
+    transform: translateY(6px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }

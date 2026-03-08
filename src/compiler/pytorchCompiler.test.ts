@@ -58,28 +58,6 @@ describe('generatePytorchCode', () => {
     expect(code).toContain('align_corners=True');
   });
 
-  it('supports concat branches with multiple inputs', () => {
-    const code = generatePytorchCode(
-      createGraph(
-        'ConcatNet',
-        [
-          { id: 'image', moduleType: 'Input', attributeName: 'image', params: { shape: '[B, 32]' } },
-          { id: 'skip', moduleType: 'Input', attributeName: 'skip', params: { shape: '[B, 32]' } },
-          { id: 'concat', moduleType: 'Concat', attributeName: 'concat', params: { dim: 1 } },
-          { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
-        ],
-        [
-          { id: 'edge-1', sourceId: 'image', targetId: 'concat' },
-          { id: 'edge-2', sourceId: 'skip', targetId: 'concat' },
-          { id: 'edge-3', sourceId: 'concat', targetId: 'output' },
-        ],
-      ),
-    );
-
-    expect(code).toContain('def forward(self, image, skip):');
-    expect(code).toContain('torch.cat((image, skip), dim=1)');
-  });
-
   it('calls bilinear layers with two input tensors', () => {
     const code = generatePytorchCode(
       createGraph(
@@ -121,6 +99,7 @@ describe('generatePytorchCode', () => {
             attributeName: 'linear',
             params: { in_features: 128, out_features: 64 },
             containerId: 'seq',
+            containerOrder: 0,
           },
           {
             id: 'relu',
@@ -128,13 +107,13 @@ describe('generatePytorchCode', () => {
             attributeName: 'relu',
             params: { inplace: true },
             containerId: 'seq',
+            containerOrder: 1,
           },
           { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
         ],
         [
-          { id: 'edge-1', sourceId: 'input', targetId: 'linear' },
-          { id: 'edge-2', sourceId: 'linear', targetId: 'relu' },
-          { id: 'edge-3', sourceId: 'seq', targetId: 'output' },
+          { id: 'edge-1', sourceId: 'input', targetId: 'seq' },
+          { id: 'edge-2', sourceId: 'seq', targetId: 'output' },
         ],
       ),
     );
@@ -143,6 +122,97 @@ describe('generatePytorchCode', () => {
     expect(code).toContain('nn.Linear(in_features=128, out_features=64)');
     expect(code).toContain('nn.ReLU(inplace=True)');
     expect(code).toContain('x1 = self.encoder(x)');
+  });
+
+  it('orders sequential children by containerOrder', () => {
+    const code = generatePytorchCode(
+      createGraph(
+        'OrderedSequentialNet',
+        [
+          { id: 'input', moduleType: 'Input', attributeName: 'image', params: { shape: '[B, 32]' } },
+          { id: 'seq', moduleType: 'Sequential', attributeName: 'encoder', params: {} },
+          {
+            id: 'relu',
+            moduleType: 'ReLU',
+            attributeName: 'relu',
+            params: { inplace: true },
+            containerId: 'seq',
+            containerOrder: 1,
+          },
+          {
+            id: 'linear',
+            moduleType: 'Linear',
+            attributeName: 'linear',
+            params: { in_features: 32, out_features: 16 },
+            containerId: 'seq',
+            containerOrder: 0,
+          },
+          { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
+        ],
+        [
+          { id: 'edge-1', sourceId: 'input', targetId: 'seq' },
+          { id: 'edge-2', sourceId: 'seq', targetId: 'output' },
+        ],
+      ),
+    );
+
+    expect(code.indexOf('nn.Linear(in_features=32, out_features=16)')).toBeLessThan(
+      code.indexOf('nn.ReLU(inplace=True)'),
+    );
+  });
+
+  it('builds nested sequential containers recursively', () => {
+    const code = generatePytorchCode(
+      createGraph(
+        'NestedSequentialNet',
+        [
+          { id: 'input', moduleType: 'Input', attributeName: 'image', params: { shape: '[B, 32]' } },
+          { id: 'outer', moduleType: 'Sequential', attributeName: 'outer_encoder', params: {} },
+          {
+            id: 'inner',
+            moduleType: 'Sequential',
+            attributeName: 'inner_encoder',
+            params: {},
+            containerId: 'outer',
+            containerOrder: 0,
+          },
+          {
+            id: 'linear',
+            moduleType: 'Linear',
+            attributeName: 'linear',
+            params: { in_features: 32, out_features: 16 },
+            containerId: 'inner',
+            containerOrder: 0,
+          },
+          {
+            id: 'relu',
+            moduleType: 'ReLU',
+            attributeName: 'relu',
+            params: { inplace: true },
+            containerId: 'inner',
+            containerOrder: 1,
+          },
+          {
+            id: 'dropout',
+            moduleType: 'Dropout',
+            attributeName: 'dropout',
+            params: { p: 0.1 },
+            containerId: 'outer',
+            containerOrder: 1,
+          },
+          { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
+        ],
+        [
+          { id: 'edge-1', sourceId: 'input', targetId: 'outer' },
+          { id: 'edge-2', sourceId: 'outer', targetId: 'output' },
+        ],
+      ),
+    );
+
+    expect(code).toContain('self.outer_encoder = nn.Sequential(');
+    expect(code).toContain('nn.Sequential(');
+    expect(code).toContain('nn.Dropout(p=0.1)');
+    expect(code).toContain('x1 = self.outer_encoder(x)');
   });
 
   it('builds container child access for module dict containers', () => {

@@ -1,6 +1,6 @@
 import type { GraphModel, GraphNode } from './types';
 import { buildGraphIndex, getContainerChildren } from './utils';
-import { getLayerDefinition } from '../layers';
+import { getNodeBehavior } from '../nodes';
 
 export interface GraphConnectionCandidate {
   source?: string | null;
@@ -19,47 +19,57 @@ export interface GraphValidationIssue {
   edgeId?: string;
 }
 
-const UNBOUNDED_INPUTS = Number.POSITIVE_INFINITY;
-
 function createResult(isValid: boolean, code: string | null = null): GraphConnectionValidationResult {
   return { isValid, code };
 }
 
-function getMaxIncomingEdges(node: GraphNode): number {
-  switch (node.moduleType) {
-    case 'Input':
-      return 0;
-    case 'Output':
-    case 'Concat':
-      return UNBOUNDED_INPUTS;
-    case 'Bilinear':
-      return 2;
-    default:
-      return 1;
-  }
-}
-
-function getMinIncomingEdges(node: GraphNode): number {
-  if (getLayerDefinition(node.moduleType).kind === 'container') {
-    return 0;
-  }
-
-  switch (node.moduleType) {
-    case 'Input':
-      return 0;
-    case 'Output':
-      return 1;
-    case 'Concat':
-      return 2;
-    case 'Bilinear':
-      return 2;
-    default:
-      return 1;
-  }
-}
-
 function describeNode(node: GraphNode): string {
   return `${node.moduleType} \`${node.attributeName}\``;
+}
+
+function isBlockedContainerChildEndpoint(
+  index: ReturnType<typeof buildGraphIndex>,
+  node: GraphNode,
+): boolean {
+  if (!node.containerId) {
+    return false;
+  }
+
+  const parentNode = index.nodeMap.get(node.containerId);
+  if (!parentNode) {
+    return false;
+  }
+
+  return !getNodeBehavior(parentNode.moduleType).getConnectionPolicy().allowDirectChildConnections;
+}
+
+function getEndpointRejectionCode(node: GraphNode, direction: 'source' | 'target'): string | null {
+  const policy = getNodeBehavior(node.moduleType).getConnectionPolicy();
+  if (direction === 'source') {
+    if (policy.canSourceConnections) {
+      return null;
+    }
+
+    if (node.moduleType === 'Output') {
+      return 'output-source';
+    }
+
+    return getNodeBehavior(node.moduleType).isContainer()
+      ? 'non-callable-container'
+      : 'invalid-source';
+  }
+
+  if (policy.canTargetConnections) {
+    return null;
+  }
+
+  if (node.moduleType === 'Input') {
+    return 'input-target';
+  }
+
+  return getNodeBehavior(node.moduleType).isContainer()
+    ? 'non-callable-container'
+    : 'invalid-target';
 }
 
 function wouldCreateCycle(graph: GraphModel, sourceId: string, targetId: string): boolean {
@@ -109,20 +119,18 @@ export function validateGraphConnection(
     return createResult(false, 'missing-node');
   }
 
-  if (sourceNode.moduleType === 'Output') {
-    return createResult(false, 'output-source');
+  const sourceCode = getEndpointRejectionCode(sourceNode, 'source');
+  if (sourceCode) {
+    return createResult(false, sourceCode);
   }
 
-  if (sourceNode.moduleType === 'ModuleList' || sourceNode.moduleType === 'ModuleDict') {
-    return createResult(false, 'non-callable-container');
+  const targetCode = getEndpointRejectionCode(targetNode, 'target');
+  if (targetCode) {
+    return createResult(false, targetCode);
   }
 
-  if (targetNode.moduleType === 'Input') {
-    return createResult(false, 'input-target');
-  }
-
-  if (targetNode.moduleType === 'ModuleList' || targetNode.moduleType === 'ModuleDict') {
-    return createResult(false, 'non-callable-container');
+  if (isBlockedContainerChildEndpoint(index, sourceNode) || isBlockedContainerChildEndpoint(index, targetNode)) {
+    return createResult(false, 'container-child-endpoint');
   }
 
   const duplicateEdge = graph.edges.some(
@@ -132,8 +140,8 @@ export function validateGraphConnection(
     return createResult(false, 'duplicate-edge');
   }
 
+  const maxIncomingEdges = getNodeBehavior(targetNode.moduleType).getConnectionPolicy().maxIncomingEdges;
   const currentIncomingCount = (index.reverseList.get(candidate.target) ?? []).length;
-  const maxIncomingEdges = getMaxIncomingEdges(targetNode);
   if (Number.isFinite(maxIncomingEdges) && currentIncomingCount >= maxIncomingEdges) {
     return createResult(false, 'max-inputs');
   }
@@ -155,14 +163,44 @@ export function canConnectGraphNodes(
 export function validateGraphForCompilation(graph: GraphModel): GraphValidationIssue[] {
   const issues: GraphValidationIssue[] = [];
   const index = buildGraphIndex(graph);
-  const containerChildren = getContainerChildren(graph, index.topologicalOrder);
+  const containerChildren = getContainerChildren(graph);
 
   graph.edges.forEach((edge) => {
-    if (!index.nodeMap.has(edge.sourceId) || !index.nodeMap.has(edge.targetId)) {
+    const sourceNode = index.nodeMap.get(edge.sourceId);
+    const targetNode = index.nodeMap.get(edge.targetId);
+
+    if (!sourceNode || !targetNode) {
       issues.push({
         code: 'dangling-edge',
         edgeId: edge.id,
         message: `Edge \`${edge.id}\` references a missing source or target node.`,
+      });
+      return;
+    }
+
+    const sourceCode = getEndpointRejectionCode(sourceNode, 'source');
+    if (sourceCode) {
+      issues.push({
+        code: sourceCode,
+        edgeId: edge.id,
+        message: `Edge \`${edge.id}\` starts from invalid source ${describeNode(sourceNode)}.`,
+      });
+    }
+
+    const targetCode = getEndpointRejectionCode(targetNode, 'target');
+    if (targetCode) {
+      issues.push({
+        code: targetCode,
+        edgeId: edge.id,
+        message: `Edge \`${edge.id}\` targets invalid node ${describeNode(targetNode)}.`,
+      });
+    }
+
+    if (isBlockedContainerChildEndpoint(index, sourceNode) || isBlockedContainerChildEndpoint(index, targetNode)) {
+      issues.push({
+        code: 'container-child-edge',
+        edgeId: edge.id,
+        message: `Edge \`${edge.id}\` cannot connect directly to a protected container child module.`,
       });
     }
   });
@@ -175,19 +213,21 @@ export function validateGraphForCompilation(graph: GraphModel): GraphValidationI
   }
 
   graph.nodes.forEach((node) => {
+    const nodeBehavior = getNodeBehavior(node.moduleType);
+    const parentNode = node.containerId ? index.nodeMap.get(node.containerId) : undefined;
+    const parentBehavior = parentNode ? getNodeBehavior(parentNode.moduleType) : null;
     const incomingCount = (index.reverseList.get(node.id) ?? []).length;
-    const minIncomingEdges = getMinIncomingEdges(node);
-    const maxIncomingEdges = getMaxIncomingEdges(node);
+    const outgoingCount = (index.adjacencyList.get(node.id) ?? []).length;
+    const policy = nodeBehavior.getConnectionPolicy();
 
     if (node.containerId) {
-      const parentNode = index.nodeMap.get(node.containerId);
       if (!parentNode) {
         issues.push({
           code: 'missing-container',
           nodeId: node.id,
           message: `${describeNode(node)} references a missing container.`,
         });
-      } else if (parentNode.id === node.id || getLayerDefinition(parentNode.moduleType).kind !== 'container') {
+      } else if (!parentBehavior?.isContainer() || !nodeBehavior.canBeNestedIn(parentBehavior)) {
         issues.push({
           code: 'invalid-container',
           nodeId: node.id,
@@ -196,34 +236,35 @@ export function validateGraphForCompilation(graph: GraphModel): GraphValidationI
       }
     }
 
-    if (incomingCount < minIncomingEdges) {
+    const nestedInImplicitContainer = Boolean(parentBehavior?.usesImplicitChildExecution());
+    if (!nestedInImplicitContainer && incomingCount < policy.minIncomingEdges) {
       issues.push({
         code: 'missing-inputs',
         nodeId: node.id,
         message:
-          minIncomingEdges === 1
+          policy.minIncomingEdges === 1
             ? `${describeNode(node)} requires an incoming connection.`
-            : `${describeNode(node)} requires at least ${minIncomingEdges} incoming connections.`,
+            : `${describeNode(node)} requires at least ${policy.minIncomingEdges} incoming connections.`,
       });
     }
 
-    if (Number.isFinite(maxIncomingEdges) && incomingCount > maxIncomingEdges) {
+    if (Number.isFinite(policy.maxIncomingEdges) && incomingCount > policy.maxIncomingEdges) {
       issues.push({
         code: 'too-many-inputs',
         nodeId: node.id,
-        message: `${describeNode(node)} supports at most ${maxIncomingEdges} incoming connection${maxIncomingEdges === 1 ? '' : 's'}.`,
+        message: `${describeNode(node)} supports at most ${policy.maxIncomingEdges} incoming connection${policy.maxIncomingEdges === 1 ? '' : 's'}.`,
       });
     }
 
-    if ((node.moduleType === 'ModuleList' || node.moduleType === 'ModuleDict') && (index.adjacencyList.get(node.id)?.length ?? 0) > 0) {
+    if (!policy.canSourceConnections && outgoingCount > 0) {
       issues.push({
-        code: 'non-callable-container',
+        code: getEndpointRejectionCode(node, 'source') ?? 'invalid-source',
         nodeId: node.id,
-        message: `${describeNode(node)} cannot be used as a callable layer. Connect one of its child modules instead.`,
+        message: `${describeNode(node)} cannot be used as a source node.`,
       });
     }
 
-    if ((node.moduleType === 'ModuleList' || node.moduleType === 'ModuleDict' || node.moduleType === 'Sequential') && (containerChildren.get(node.id)?.length ?? 0) === 0) {
+    if (nodeBehavior.isContainer() && (containerChildren.get(node.id)?.length ?? 0) === 0) {
       issues.push({
         code: 'empty-container',
         nodeId: node.id,

@@ -4,8 +4,9 @@ import type {
   GraphNodeDimensions,
   GraphPosition,
 } from '../graph/types';
-import { createEmptyGraphLayout } from '../graph/utils';
+import { createEmptyGraphLayout, normalizeContainerOrders } from '../graph/utils';
 import { layerRegistry, type LayerParamValue } from '../layers';
+import { getNodeBehavior } from '../nodes';
 
 export const TORCHCANVAS_PROJECT_APP = 'torchcanvas';
 export const TORCHCANVAS_PROJECT_SCHEMA_VERSION = 1;
@@ -73,16 +74,19 @@ function sortRecord<T>(
 }
 
 function normalizeGraph(graph: GraphModel): GraphModel {
+  const normalizedGraph = normalizeContainerOrders(graph);
+
   return {
-    modelName: graph.modelName,
-    nodes: graph.nodes.map((node) => ({
+    modelName: normalizedGraph.modelName,
+    nodes: normalizedGraph.nodes.map((node) => ({
       id: node.id,
       moduleType: node.moduleType,
       attributeName: node.attributeName,
       params: { ...node.params },
       ...(node.containerId ? { containerId: node.containerId } : {}),
+      ...(typeof node.containerOrder === 'number' ? { containerOrder: node.containerOrder } : {}),
     })),
-    edges: graph.edges.map((edge) => ({
+    edges: normalizedGraph.edges.map((edge) => ({
       id: edge.id,
       sourceId: edge.sourceId,
       targetId: edge.targetId,
@@ -301,7 +305,7 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
       return;
     }
 
-    const { id, moduleType, attributeName, params, containerId } = entry;
+    const { id, moduleType, attributeName, params, containerId, containerOrder } = entry;
 
     if (typeof id !== 'string' || id.length === 0) {
       errors.push(`${path}.id must be a non-empty string.`);
@@ -331,6 +335,15 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
     }
 
     if (
+      typeof containerOrder !== 'undefined' &&
+      (typeof containerOrder !== 'number' ||
+        !Number.isInteger(containerOrder) ||
+        containerOrder < 0)
+    ) {
+      errors.push(`${path}.containerOrder must be a non-negative integer when provided.`);
+    }
+
+    if (
       typeof moduleType === 'string' &&
       moduleType in layerRegistry &&
       typeof attributeName === 'string' &&
@@ -343,6 +356,7 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
         attributeName,
         params: { ...(params as Record<string, LayerParamValue>) },
         ...(typeof containerId === 'string' ? { containerId } : {}),
+        ...(typeof containerOrder === 'number' ? { containerOrder } : {}),
       });
     }
   });
@@ -422,7 +436,12 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
 
     if (node.containerId) {
       const parentNode = graph.nodes.find((candidate) => candidate.id === node.containerId);
-      if (!parentNode || !(parentNode.moduleType in layerRegistry) || layerRegistry[parentNode.moduleType].kind !== 'container') {
+      if (
+        !parentNode ||
+        !(parentNode.moduleType in layerRegistry) ||
+        !getNodeBehavior(parentNode.moduleType).isContainer() ||
+        !getNodeBehavior(node.moduleType).canBeNestedIn(getNodeBehavior(parentNode.moduleType))
+      ) {
         errors.push(`${node.id} references invalid container ${node.containerId}.`);
       }
     }

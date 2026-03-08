@@ -6,6 +6,7 @@ import clsx from 'clsx';
 
 import { getLayerColor, type ModuleType } from '../../domain/layers';
 import type { ModuleData } from '../../domain/graph/reactFlowAdapter';
+import { CONTAINER_LAYOUT } from '../../domain/nodes';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 
 function getNodeColor(type: ModuleType, connected: boolean | undefined): string {
@@ -24,15 +25,116 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
-  const { type, params, connected, shapeError } = data;
+  const { type, params, connected, shapeError, compact, hideHandles, pulseChild } = data;
   const [hovered, setHovered] = useState(false);
   const deleteNodeById = useWorkspaceStore((state) => state.deleteNodeById);
+  const isSequentialCompact = compact && data.parentContainerType === 'Sequential';
 
   const accentColor = shapeError ? '#EF4444' : getNodeColor(type, connected);
   const borderColor = shapeError ? '#EF4444' : accentColor;
   const bgColor = hexToRgba(shapeError ? '#EF4444' : accentColor, 0.08);
   const textColor = accentColor;
   const showDelete = hovered || selected;
+  const deleteAccent = '#EF4444';
+
+  if (compact) {
+    return (
+      <div
+        data-compact-node="true"
+        data-parent-container={data.parentContainerType ?? 'none'}
+        data-pulse-child={pulseChild ? 'true' : 'false'}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          borderColor,
+          backgroundColor: selected
+            ? hexToRgba(accentColor, isSequentialCompact ? 0.18 : 0.16)
+            : hexToRgba(accentColor, isSequentialCompact ? 0.1 : 0.08),
+          color: textColor,
+          boxShadow: selected
+            ? `0 0 18px -4px ${hexToRgba(accentColor, 0.35)}, 0 0 0 1px ${hexToRgba(accentColor, 0.55)}`
+            : `0 4px 16px ${hexToRgba('#000000', 0.25)}`,
+          position: 'relative',
+          width: '100%',
+          minWidth: '100%',
+          maxWidth: '100%',
+          height: isSequentialCompact ? CONTAINER_LAYOUT.childHeight : 50,
+          borderRadius: isSequentialCompact ? 10 : 14,
+        }}
+        className={clsx(
+          'w-full border backdrop-blur-md transition-all duration-200 px-4 flex items-center justify-between gap-3',
+          pulseChild && 'container-chip-enter',
+        )}
+      >
+        <button
+          onClick={(event) => {
+            event.stopPropagation();
+            deleteNodeById(id);
+          }}
+          title="Delete node"
+          style={{
+            opacity: showDelete ? 1 : 0,
+            pointerEvents: showDelete ? 'auto' : 'none',
+            background: '#151515',
+            border: `1px solid ${hexToRgba(deleteAccent, 0.45)}`,
+            color: deleteAccent,
+          }}
+          className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center transition-opacity z-20"
+        >
+          <Trash2 style={{ width: 10, height: 10 }} />
+        </button>
+
+        <div className="flex items-center gap-2 min-w-0">
+          {shapeError ? (
+            <AlertTriangle className="w-4 h-4 opacity-90 flex-shrink-0" />
+          ) : (
+            <Layers className="w-4 h-4 opacity-80 flex-shrink-0" />
+          )}
+          <span className="text-[12px] font-bold tracking-wide truncate">{type}</span>
+        </div>
+
+        <span className="text-[11px] font-mono text-white/55 truncate">
+          {data.attributeName}
+        </span>
+
+        {hideHandles ? (
+          <>
+            <Handle
+              id="sequential-top"
+              type="target"
+              position={Position.Top}
+              isConnectable={false}
+              style={{ opacity: 0, pointerEvents: 'none' }}
+              className="!w-2 !h-2"
+            />
+            <Handle
+              id="sequential-bottom"
+              type="source"
+              position={Position.Bottom}
+              isConnectable={false}
+              style={{ opacity: 0, pointerEvents: 'none' }}
+              className="!w-2 !h-2"
+            />
+          </>
+        ) : (
+          <>
+            <Handle
+              type="target"
+              position={Position.Left}
+              style={{ background: '#0f0f0f', borderColor: accentColor }}
+              className="!w-2.5 !h-2.5 !border"
+            />
+            <Handle
+              type="source"
+              position={Position.Right}
+              style={{ background: '#0f0f0f', borderColor: accentColor }}
+              className="!w-2.5 !h-2.5 !border"
+            />
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -66,8 +168,8 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
           top: -10,
           right: -10,
           background: '#1a1a1a',
-          border: '1.5px solid #EF4444',
-          color: '#EF4444',
+          border: `1.5px solid ${deleteAccent}`,
+          color: deleteAccent,
           borderRadius: '50%',
           width: 20,
           height: 20,

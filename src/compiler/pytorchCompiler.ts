@@ -2,6 +2,7 @@ import type { GraphModel, GraphNode } from '../domain/graph/types';
 import { buildGraphIndex, getContainerChildren } from '../domain/graph/utils';
 import { validateGraphForCompilation, type GraphValidationIssue } from '../domain/graph/validation';
 import { getLayerDefinition } from '../domain/layers';
+import { getNodeBehavior } from '../domain/nodes';
 import { getParamSpec, sanitizePythonIdentifier, serializePythonValue } from './pythonSerializer';
 
 interface InputBinding {
@@ -89,6 +90,76 @@ function createLayerInitExpression(node: GraphNode): string {
   return args.length > 0 ? `nn.${node.moduleType}(${args})` : `nn.${node.moduleType}()`;
 }
 
+function createContainerInitExpression(
+  graph: GraphModel,
+  nodeId: string,
+  index: ReturnType<typeof buildGraphIndex>,
+  containerChildren: ReturnType<typeof getContainerChildren>,
+  expressionCache: Map<string, string>,
+): string | null {
+  const cachedExpression = expressionCache.get(nodeId);
+  if (cachedExpression) {
+    return cachedExpression;
+  }
+
+  const node = index.nodeMap.get(nodeId);
+  if (!node) {
+    return null;
+  }
+
+  const nodeBehavior = getNodeBehavior(node.moduleType);
+  if (!nodeBehavior.isContainer()) {
+    const layerExpression = createLayerInitExpression(node);
+    expressionCache.set(nodeId, layerExpression);
+    return layerExpression;
+  }
+
+  const childIds = containerChildren.get(nodeId) ?? [];
+  const childExpressions = childIds
+    .map((childId) => createContainerInitExpression(graph, childId, index, containerChildren, expressionCache))
+    .filter((expression): expression is string => typeof expression === 'string');
+
+  let expression: string;
+  if (nodeBehavior.getCompilerKind() === 'sequential') {
+    expression = childExpressions.length
+      ? `nn.Sequential(\n            ${childExpressions.join(',\n            ')}\n        )`
+      : 'nn.Sequential()';
+  } else if (nodeBehavior.getCompilerKind() === 'module-list') {
+    expression = childExpressions.length
+      ? `nn.ModuleList([\n            ${childExpressions.join(',\n            ')}\n        ])`
+      : 'nn.ModuleList([])';
+  } else {
+    const dictEntries = childIds
+      .map((childId, indexWithinParent) => {
+        const childNode = index.nodeMap.get(childId);
+        const childExpression = createContainerInitExpression(
+          graph,
+          childId,
+          index,
+          containerChildren,
+          expressionCache,
+        );
+        if (!childNode || !childExpression) {
+          return null;
+        }
+
+        const key = sanitizePythonIdentifier(
+          childNode.attributeName,
+          `${childNode.moduleType.toLowerCase()}_${indexWithinParent + 1}`,
+        );
+        return `'${key}': ${childExpression}`;
+      })
+      .filter((entry): entry is string => typeof entry === 'string');
+
+    expression = dictEntries.length
+      ? `nn.ModuleDict({\n            ${dictEntries.join(',\n            ')}\n        })`
+      : 'nn.ModuleDict({})';
+  }
+
+  expressionCache.set(nodeId, expression);
+  return expression;
+}
+
 function createModuleAttributeName(
   node: GraphNode,
   fallbackBase: string,
@@ -116,12 +187,6 @@ function createNodeForwardExpression(
   sourceVars: string[],
   fallbackExpression: string,
 ): string {
-  if (node.moduleType === 'Concat') {
-    const concatInputs = sourceVars.length > 0 ? sourceVars : [fallbackExpression];
-    const concatDim = node.params.dim ?? 1;
-    return `torch.cat((${concatInputs.join(', ')}), dim=${concatDim})`;
-  }
-
   if (node.moduleType === 'Bilinear') {
     const leftInput = sourceVars[0] ?? fallbackExpression;
     const rightInput = sourceVars[1] ?? fallbackExpression;
@@ -235,7 +300,7 @@ class ${safeModelName}(nn.Module):
   }
 
   const index = buildGraphIndex(graph);
-  const containerChildren = getContainerChildren(graph, index.topologicalOrder);
+  const containerChildren = getContainerChildren(graph);
   const inputBinding = createInputBinding(graph, index.topologicalOrder);
 
   let initCode = '';
@@ -247,21 +312,8 @@ class ${safeModelName}(nn.Module):
   const nodeToVarName = new Map(inputBinding.variableByNodeId);
   const nodeInitExpression = new Map<string, string>();
   const usedLayerIdentifiers = new Set<string>();
-  const processedSequentials = new Set<string>();
+  const processedImplicitContainers = new Set<string>();
   const outputVariables: string[] = [];
-
-  graph.nodes.forEach((node) => {
-    if (
-      node.moduleType === 'Input' ||
-      node.moduleType === 'Output' ||
-      node.moduleType === 'Concat' ||
-      getLayerDefinition(node.moduleType).kind === 'container'
-    ) {
-      return;
-    }
-
-    nodeInitExpression.set(node.id, createLayerInitExpression(node));
-  });
 
   index.topologicalOrder.forEach((nodeId) => {
     const node = index.nodeMap.get(nodeId);
@@ -269,68 +321,34 @@ class ${safeModelName}(nn.Module):
       return;
     }
 
-    if (node.moduleType === 'Input' || node.moduleType === 'Output' || node.moduleType === 'Concat') {
+    if (node.moduleType === 'Input' || node.moduleType === 'Output') {
       return;
     }
 
-    if (getLayerDefinition(node.moduleType).kind === 'container') {
-      const childrenIds = containerChildren.get(node.id) ?? [];
-      const childrenExpressions = childrenIds
-        .map((childId) => nodeInitExpression.get(childId))
-        .filter((expression): expression is string => typeof expression === 'string');
-
-      const layerName = createModuleAttributeName(
-        node,
-        `${node.moduleType.toLowerCase()}_${layerCounter++}`,
-        usedLayerIdentifiers,
-      );
-      nodeToLayerName.set(node.id, layerName);
-
-      if (node.moduleType === 'Sequential') {
-        initCode += childrenExpressions.length
-          ? `        ${layerName} = nn.Sequential(\n            ${childrenExpressions.join(',\n            ')}\n        )\n`
-          : `        ${layerName} = nn.Sequential()\n`;
-        return;
-      }
-
-      if (node.moduleType === 'ModuleList') {
-        initCode += childrenExpressions.length
-          ? `        ${layerName} = nn.ModuleList([\n            ${childrenExpressions.join(',\n            ')}\n        ])\n`
-          : `        ${layerName} = nn.ModuleList([])\n`;
-        return;
-      }
-
-      const dictEntries = childrenIds
-        .map((childId, indexWithinParent) => {
-          const child = index.nodeMap.get(childId);
-          const expression = nodeInitExpression.get(childId);
-          if (!child || !expression) {
-            return null;
-          }
-
-          const key = sanitizePythonIdentifier(
-            child.attributeName,
-            `${child.moduleType.toLowerCase()}_${indexWithinParent + 1}`,
-          );
-          return `'${key}': ${expression}`;
-        })
-        .filter((entry): entry is string => typeof entry === 'string');
-
-      initCode += dictEntries.length
-        ? `        ${layerName} = nn.ModuleDict({\n            ${dictEntries.join(',\n            ')}\n        })\n`
-        : `        ${layerName} = nn.ModuleDict({})\n`;
+    const parentNode = node.containerId ? index.nodeMap.get(node.containerId) : undefined;
+    const parentBehavior = parentNode ? getNodeBehavior(parentNode.moduleType) : null;
+    if (parentBehavior && (parentBehavior.usesImplicitChildExecution() || parentBehavior.getCompilerKind() === 'module-list' || parentBehavior.getCompilerKind() === 'module-dict')) {
       return;
     }
 
-    if (!node.containerId) {
-      const layerName = createModuleAttributeName(
-        node,
-        `${node.moduleType.toLowerCase()}_${layerCounter++}`,
-        usedLayerIdentifiers,
-      );
-      nodeToLayerName.set(node.id, layerName);
-      initCode += `        ${layerName} = ${nodeInitExpression.get(node.id)}\n`;
+    const layerExpression = createContainerInitExpression(
+      graph,
+      node.id,
+      index,
+      containerChildren,
+      nodeInitExpression,
+    );
+    if (!layerExpression) {
+      return;
     }
+
+    const layerName = createModuleAttributeName(
+      node,
+      `${node.moduleType.toLowerCase()}_${layerCounter++}`,
+      usedLayerIdentifiers,
+    );
+    nodeToLayerName.set(node.id, layerName);
+    initCode += `        ${layerName} = ${layerExpression}\n`;
   });
 
   let fallbackReturnVariable = inputBinding.fallbackExpression;
@@ -370,39 +388,14 @@ class ${safeModelName}(nn.Module):
       if (!parentNode) {
         return;
       }
+      const parentBehavior = getNodeBehavior(parentNode.moduleType);
 
-      if (parentNode.moduleType === 'Sequential') {
-        if (!processedSequentials.has(parentNode.id)) {
-          processedSequentials.add(parentNode.id);
-          const layerName = nodeToLayerName.get(parentNode.id);
-          if (!layerName) {
-            return;
-          }
-
-          const outputVar = `x${variableCounter++}`;
-          const expression = createNodeForwardExpression(
-            parentNode,
-            layerName,
-            sourceVars,
-            inputBinding.fallbackExpression,
-          );
-          forwardCode += `        ${outputVar} = ${expression}\n`;
-          nodeToVarName.set(parentNode.id, outputVar);
-          fallbackReturnVariable = outputVar;
-
-          (containerChildren.get(parentNode.id) ?? []).forEach((childId) => {
-            nodeToVarName.set(childId, outputVar);
-          });
-        }
-
+      if (parentBehavior.usesImplicitChildExecution()) {
         return;
       }
 
-      if (parentNode.moduleType === 'ModuleList') {
-        const childIds = (containerChildren.get(parentNode.id) ?? []).filter((childId) => {
-          const child = index.nodeMap.get(childId);
-          return child?.moduleType !== 'Concat';
-        });
+      if (parentBehavior.getCompilerKind() === 'module-list') {
+        const childIds = containerChildren.get(parentNode.id) ?? [];
         const childIndex = childIds.indexOf(node.id);
         const layerName = `${nodeToLayerName.get(parentNode.id)}[${childIndex}]`;
         const outputVar = `x${variableCounter++}`;
@@ -419,7 +412,7 @@ class ${safeModelName}(nn.Module):
         return;
       }
 
-      if (parentNode.moduleType === 'ModuleDict') {
+      if (parentBehavior.getCompilerKind() === 'module-dict') {
         const key = sanitizePythonIdentifier(node.attributeName, node.moduleType.toLowerCase());
         const layerName = `${nodeToLayerName.get(parentNode.id)}['${key}']`;
         const outputVar = `x${variableCounter++}`;
@@ -437,9 +430,10 @@ class ${safeModelName}(nn.Module):
       }
     }
 
-    if (getLayerDefinition(node.moduleType).kind === 'container') {
-      if (node.moduleType === 'Sequential' && !processedSequentials.has(node.id)) {
-        processedSequentials.add(node.id);
+    const nodeBehavior = getNodeBehavior(node.moduleType);
+    if (nodeBehavior.isContainer()) {
+      if (nodeBehavior.isCallable() && nodeBehavior.usesImplicitChildExecution() && !processedImplicitContainers.has(node.id)) {
+        processedImplicitContainers.add(node.id);
         const layerName = nodeToLayerName.get(node.id);
         if (!layerName) {
           return;
@@ -455,22 +449,11 @@ class ${safeModelName}(nn.Module):
         forwardCode += `        ${outputVar} = ${expression}\n`;
         nodeToVarName.set(node.id, outputVar);
         fallbackReturnVariable = outputVar;
+        (containerChildren.get(node.id) ?? []).forEach((childId) => {
+          nodeToVarName.set(childId, outputVar);
+        });
       }
 
-      return;
-    }
-
-    if (node.moduleType === 'Concat') {
-      const outputVar = `x${variableCounter++}`;
-      const expression = createNodeForwardExpression(
-        node,
-        'torch.cat',
-        sourceVars,
-        inputBinding.fallbackExpression,
-      );
-      forwardCode += `        ${outputVar} = ${expression}\n`;
-      nodeToVarName.set(node.id, outputVar);
-      fallbackReturnVariable = outputVar;
       return;
     }
 

@@ -9,10 +9,9 @@ export type LayerCategory =
   | 'Pooling'
   | 'Normalization'
   | 'Utility'
-  | 'Merge'
   | 'Containers';
 
-export type LayerKind = 'data' | 'module' | 'merge' | 'container';
+export type LayerKind = 'data' | 'module' | 'container';
 export type ParamKind = 'boolean' | 'number' | 'string' | 'literal';
 export type InternalStateCategory = 'parameter' | 'buffer';
 
@@ -45,8 +44,6 @@ const literalParam: ParamSpec = { kind: 'literal' };
 const emptyStates = () => [] as InternalStateDescriptor[];
 
 const nnDocs = (name: string) => `https://pytorch.org/docs/stable/generated/torch.nn.${name}.html`;
-const torchDocs = (name: string) => `https://pytorch.org/docs/stable/generated/${name}.html`;
-
 function toNumber(value: LayerParamValue | undefined, fallback: number): number {
   if (typeof value === 'number') return value;
   if (typeof value === 'string') {
@@ -128,15 +125,6 @@ const registry = {
     defaultParams: {},
     docsPath: null,
     paramSpecs: {},
-    quickAdd: true,
-  }),
-  Concat: createLayer({
-    category: 'Merge',
-    kind: 'merge',
-    color: '#D946EF',
-    defaultParams: { dim: 1 },
-    docsPath: torchDocs('torch.cat'),
-    paramSpecs: { dim: numberParam },
     quickAdd: true,
   }),
   Conv1d: createLayer({
@@ -716,7 +704,6 @@ const categoryOrder: LayerCategory[] = [
   'Pooling',
   'Normalization',
   'Utility',
-  'Merge',
   'Containers',
 ];
 

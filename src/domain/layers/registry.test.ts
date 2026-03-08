@@ -26,4 +26,12 @@ describe('layerRegistry', () => {
       expect(registryTypes).toContain(type);
     });
   });
+
+  it('does not expose removed merge layers', () => {
+    const categories = getLayerCategories().map((group) => group.category);
+    const registryTypes = getAllLayerEntries().map((entry) => entry.type);
+
+    expect(categories).not.toContain('Merge');
+    expect(registryTypes).not.toContain('Concat');
+  });
 });

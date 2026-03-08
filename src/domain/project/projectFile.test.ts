@@ -18,7 +18,7 @@ function createNode(
   id: string,
   moduleType: GraphNode['moduleType'],
   attributeName: string,
-  options: Partial<Pick<GraphNode, 'containerId' | 'params'>> = {},
+  options: Partial<Pick<GraphNode, 'containerId' | 'containerOrder' | 'params'>> = {},
 ): GraphNode {
   return {
     id,
@@ -26,6 +26,9 @@ function createNode(
     attributeName,
     params: options.params ?? getDefaultParams(moduleType),
     ...(options.containerId ? { containerId: options.containerId } : {}),
+    ...(typeof options.containerOrder === 'number'
+      ? { containerOrder: options.containerOrder }
+      : {}),
   };
 }
 
@@ -138,6 +141,37 @@ describe('projectFile', () => {
     );
   });
 
+  it('rejects removed Concat nodes on import', () => {
+    const project = {
+      app: 'torchcanvas',
+      schemaVersion: 1,
+      savedAt: new Date().toISOString(),
+      graph: {
+        modelName: 'OldConcatProject',
+        nodes: [
+          {
+            id: 'concat',
+            moduleType: 'Concat',
+            attributeName: 'concat_1',
+            params: { dim: 1 },
+          },
+        ],
+        edges: [],
+      },
+      layout: {
+        positionsById: {
+          concat: { x: 200, y: 120 },
+        },
+      },
+    };
+
+    const result = validateProjectFile(project);
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toContain(
+      'graph.nodes[0].moduleType is not a supported TorchCanvas layer.',
+    );
+  });
+
   it('rejects dangling edges and invalid container references', () => {
     const project = {
       app: 'torchcanvas',
@@ -190,5 +224,53 @@ describe('projectFile', () => {
 
     expect(result.isValid).toBe(true);
     expect(result.project?.graph).toEqual(graph);
+  });
+
+  it('normalizes missing containerOrder values on import', () => {
+    const project = {
+      app: 'torchcanvas',
+      schemaVersion: 1,
+      savedAt: new Date().toISOString(),
+      graph: {
+        modelName: 'SequentialProject',
+        nodes: [
+          {
+            id: 'seq',
+            moduleType: 'Sequential',
+            attributeName: 'encoder',
+            params: {},
+          },
+          {
+            id: 'linear',
+            moduleType: 'Linear',
+            attributeName: 'linear_1',
+            params: getDefaultParams('Linear'),
+            containerId: 'seq',
+          },
+          {
+            id: 'relu',
+            moduleType: 'ReLU',
+            attributeName: 'relu_1',
+            params: getDefaultParams('ReLU'),
+            containerId: 'seq',
+          },
+        ],
+        edges: [],
+      },
+      layout: {
+        positionsById: {
+          seq: { x: 120, y: 80 },
+          linear: { x: 150, y: 140 },
+          relu: { x: 150, y: 220 },
+        },
+      },
+    };
+
+    const parsed = parseProjectFile(JSON.stringify(project));
+    const childOrders = parsed.graph.nodes
+      .filter((node) => node.containerId === 'seq')
+      .map((node) => node.containerOrder);
+
+    expect(childOrders).toEqual([0, 1]);
   });
 });

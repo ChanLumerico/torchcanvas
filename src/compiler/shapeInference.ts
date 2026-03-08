@@ -1,8 +1,56 @@
 import type { GraphModel, GraphNodePresentationMeta } from '../domain/graph/types';
-import { buildGraphIndex } from '../domain/graph/utils';
+import { buildGraphIndex, getOrderedContainerChildren } from '../domain/graph/utils';
+import { getLayerDefinition } from '../domain/layers';
+import { getNodeBehavior } from '../domain/nodes';
 import type { LayerParamValue, LayerParams, ModuleType } from '../domain/layers';
 
 type ShapeToken = string | number;
+
+function propagateImplicitContainerShapes(
+  graph: GraphModel,
+  containerId: string,
+  currentShape: string,
+  metaByNodeId: Record<string, GraphNodePresentationMeta>,
+): string {
+  const childNodes = getOrderedContainerChildren(graph, containerId);
+  let nextShape = currentShape;
+
+  childNodes.forEach((childNode) => {
+    const childBehavior = getNodeBehavior(childNode.moduleType);
+
+    if (childBehavior.usesImplicitChildExecution()) {
+      nextShape = propagateImplicitContainerShapes(graph, childNode.id, nextShape, metaByNodeId);
+      metaByNodeId[childNode.id].outputShape = nextShape;
+      metaByNodeId[childNode.id].shapeError = false;
+      return;
+    }
+
+    if (childBehavior.isContainer()) {
+      throw new Error(`Nested non-callable container ${childNode.moduleType} is not shape-inferable.`);
+    }
+
+    nextShape = calculateLayerShape(childNode.moduleType, childNode.params, [nextShape]);
+    metaByNodeId[childNode.id].outputShape = nextShape;
+    metaByNodeId[childNode.id].shapeError = false;
+  });
+
+  return nextShape;
+}
+
+function markImplicitContainerDescendantsConnected(
+  graph: GraphModel,
+  containerId: string,
+  connected: boolean,
+  metaByNodeId: Record<string, GraphNodePresentationMeta>,
+): void {
+  getOrderedContainerChildren(graph, containerId).forEach((childNode) => {
+    metaByNodeId[childNode.id].connected = connected;
+
+    if (getNodeBehavior(childNode.moduleType).isContainer()) {
+      markImplicitContainerDescendantsConnected(graph, childNode.id, connected, metaByNodeId);
+    }
+  });
+}
 
 export function inferGraphNodeMeta(graph: GraphModel): Record<string, GraphNodePresentationMeta> {
   const index = buildGraphIndex(graph);
@@ -20,6 +68,11 @@ export function inferGraphNodeMeta(graph: GraphModel): Record<string, GraphNodeP
   index.topologicalOrder.forEach((nodeId) => {
     const node = index.nodeMap.get(nodeId);
     if (!node) {
+      return;
+    }
+
+    const parentNode = node.containerId ? index.nodeMap.get(node.containerId) : undefined;
+    if (parentNode && getNodeBehavior(parentNode.moduleType).usesImplicitChildExecution()) {
       return;
     }
 
@@ -45,6 +98,16 @@ export function inferGraphNodeMeta(graph: GraphModel): Record<string, GraphNodeP
         return;
       }
 
+      if (getNodeBehavior(node.moduleType).usesImplicitChildExecution()) {
+        metaByNodeId[node.id].outputShape = propagateImplicitContainerShapes(
+          graph,
+          node.id,
+          inputShapes[0],
+          metaByNodeId,
+        );
+        return;
+      }
+
       metaByNodeId[node.id].outputShape = calculateLayerShape(
         node.moduleType,
         node.params,
@@ -55,6 +118,33 @@ export function inferGraphNodeMeta(graph: GraphModel): Record<string, GraphNodeP
       metaByNodeId[node.id].outputShape = 'Error: Dimension Mismatch';
     }
   });
+
+  graph.nodes
+    .filter((node) => getLayerDefinition(node.moduleType).kind === 'container')
+    .forEach((containerNode) => {
+      const childNodes = getOrderedContainerChildren(graph, containerNode.id);
+      const hasConnectedChild = childNodes.some((childNode) => index.connectedIds.has(childNode.id));
+      const parentNode = containerNode.containerId
+        ? index.nodeMap.get(containerNode.containerId)
+        : undefined;
+      const inheritedConnected = parentNode
+        ? getNodeBehavior(parentNode.moduleType).usesImplicitChildExecution() &&
+          metaByNodeId[parentNode.id]?.connected
+        : false;
+      metaByNodeId[containerNode.id].connected = getNodeBehavior(containerNode.moduleType).getConnectedState({
+        explicitConnected: index.connectedIds.has(containerNode.id) || inheritedConnected,
+        hasConnectedChild,
+      });
+
+      if (getNodeBehavior(containerNode.moduleType).usesImplicitChildExecution()) {
+        markImplicitContainerDescendantsConnected(
+          graph,
+          containerNode.id,
+          metaByNodeId[containerNode.id].connected,
+          metaByNodeId,
+        );
+      }
+    });
 
   return metaByNodeId;
 }
@@ -135,37 +225,6 @@ function getKernelArguments(params: LayerParams, count: number) {
 function calculateLayerShape(type: ModuleType, params: LayerParams, inputShapes: string[]): string {
   if (inputShapes.length === 0) {
     throw new Error('No inputs available');
-  }
-
-  if (type === 'Concat') {
-    const dimension = toNumericValue(params.dim, 1);
-    const baseShape = parseShape(inputShapes[0]);
-    const normalizedDimension = dimension < 0 ? baseShape.length + dimension : dimension;
-    let totalDimension = 0;
-
-    inputShapes.forEach((shapeString) => {
-      const parsedShape = parseShape(shapeString);
-      if (parsedShape.length !== baseShape.length) {
-        throw new Error('Concat rank mismatch');
-      }
-
-      parsedShape.forEach((entry, index) => {
-        if (index !== normalizedDimension && entry !== baseShape[index]) {
-          throw new Error('Concat shape mismatch');
-        }
-      });
-
-      const dimensionValue = parsedShape[normalizedDimension];
-      if (typeof dimensionValue === 'number') {
-        totalDimension += dimensionValue;
-      } else {
-        totalDimension = -1;
-      }
-    });
-
-    const outputShape = [...baseShape];
-    outputShape[normalizedDimension] = totalDimension > 0 ? totalDimension : '...';
-    return formatShape(outputShape);
   }
 
   const inputShape = parseShape(inputShapes[0]);
