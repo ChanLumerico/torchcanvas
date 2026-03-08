@@ -1,8 +1,23 @@
 import { useState, useRef, useEffect } from 'react';
-import { Download, Save, Undo2, Redo2, PencilLine } from 'lucide-react';
+import type { ChangeEvent } from 'react';
+import { Download, Save, Undo2, Redo2, PencilLine, Upload } from 'lucide-react';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 
-export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => void }) {
+interface ToolbarProps {
+  onExitWorkspace: () => void;
+  onExportModel: () => void;
+  onSaveProject: () => void;
+  onImportProjectFile: (file: File) => Promise<void> | void;
+  isDirty: boolean;
+}
+
+export default function Toolbar({
+  onExitWorkspace,
+  onExportModel,
+  onSaveProject,
+  onImportProjectFile,
+  isDirty,
+}: ToolbarProps) {
   const modelName = useWorkspaceStore((state) => state.modelName);
   const setModelName = useWorkspaceStore((state) => state.setModelName);
   const undo = useWorkspaceStore((state) => state.undo);
@@ -12,6 +27,7 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
 
   const [isEditing, setIsEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -31,6 +47,21 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
       setIsEditing(false);
       if (!modelName.trim()) setModelName('GeneratedModel');
     }
+  };
+
+  const handleImportButtonClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleImportChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    await onImportProjectFile(file);
   };
 
   return (
@@ -67,6 +98,16 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
       </div>
 
       <div className="flex items-center gap-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={(event) => {
+            void handleImportChange(event);
+          }}
+        />
+
         {/* Undo / Redo */}
         <div className="flex items-center bg-black/20 rounded-lg p-1 border border-border/50 mr-4">
           <button
@@ -87,13 +128,27 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
           </button>
         </div>
 
-        <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-textMuted hover:text-white transition-colors rounded-lg hover:bg-white/5 border border-transparent hover:border-white/10">
+        <button
+          onClick={handleImportButtonClick}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-textMuted hover:text-white transition-colors rounded-lg hover:bg-white/5 border border-transparent hover:border-white/10"
+        >
+          <Upload className="w-3.5 h-3.5" />
+          Import Project
+        </button>
+        <button
+          onClick={onExportModel}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-textMuted hover:text-white transition-colors rounded-lg hover:bg-white/5 border border-transparent hover:border-white/10"
+        >
           <Download className="w-3.5 h-3.5" />
           Export Model
         </button>
-        <button className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold bg-primary hover:bg-primaryHover text-white transition-colors rounded-lg shadow-sm">
+        <button
+          onClick={onSaveProject}
+          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold bg-primary hover:bg-primaryHover text-white transition-colors rounded-lg shadow-sm"
+          title={isDirty ? 'Project has unsaved changes' : 'Project saved'}
+        >
           <Save className="w-3.5 h-3.5" />
-          Save
+          Save Project
         </button>
       </div>
     </header>

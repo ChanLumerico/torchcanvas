@@ -31,6 +31,7 @@ import {
   omitDimensions,
   omitPositions,
 } from '../domain/graph/utils';
+import { createProjectComparisonSignature } from '../domain/project/projectFile';
 import { canConnectGraphNodes } from '../domain/graph/validation';
 import { getLayerDefinition, type LayerParamValue, type ModuleType } from '../domain/layers';
 
@@ -100,9 +101,13 @@ interface WorkspaceState {
   historyIndex: number;
   canUndo: boolean;
   canRedo: boolean;
+  isDirty: boolean;
+  persistedProjectBaseline: string;
   undo: () => void;
   redo: () => void;
   resetWorkspace: () => void;
+  replaceWorkspace: (graph: GraphModel, layout: GraphLayoutState) => void;
+  markPersistedBaseline: () => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -122,6 +127,10 @@ interface WorkspaceState {
 
 const initialSnapshot = createInitialSnapshot();
 const initialMaterialized = materializeWorkspace(initialSnapshot.graph, initialSnapshot.layout);
+const initialPersistedBaseline = createProjectComparisonSignature(
+  initialSnapshot.graph,
+  initialSnapshot.layout,
+);
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
   function applyWorkspaceState(
@@ -129,13 +138,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     layout: GraphLayoutState,
     history = get().history,
     historyIndex = get().historyIndex,
+    persistedProjectBaseline = get().persistedProjectBaseline,
   ) {
+    const currentBaseline = createProjectComparisonSignature(graph, layout);
+
     set({
       ...materializeWorkspace(graph, layout),
       history,
       historyIndex,
       canUndo: historyIndex > 0,
       canRedo: historyIndex < history.length - 1,
+      isDirty: currentBaseline !== persistedProjectBaseline,
+      persistedProjectBaseline,
     });
   }
 
@@ -153,6 +167,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     historyIndex: 0,
     canUndo: false,
     canRedo: false,
+    isDirty: false,
+    persistedProjectBaseline: initialPersistedBaseline,
 
     undo: () => {
       const state = get();
@@ -194,7 +210,53 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 
     resetWorkspace: () => {
       const snapshot = createInitialSnapshot();
-      applyWorkspaceState(snapshot.graph, snapshot.layout, [createSnapshot(snapshot.graph, snapshot.layout)], 0);
+      const persistedProjectBaseline = createProjectComparisonSignature(
+        snapshot.graph,
+        snapshot.layout,
+      );
+      applyWorkspaceState(
+        snapshot.graph,
+        snapshot.layout,
+        [createSnapshot(snapshot.graph, snapshot.layout)],
+        0,
+        persistedProjectBaseline,
+      );
+    },
+
+    replaceWorkspace: (graph, layout) => {
+      const normalizedGraph = cloneGraphModel(graph);
+      const normalizedLayout: GraphLayoutState = {
+        ...cloneGraphLayoutState(layout),
+        selection: { nodeId: null, edgeId: null },
+      };
+      const persistedProjectBaseline = createProjectComparisonSignature(
+        normalizedGraph,
+        normalizedLayout,
+      );
+
+      applyWorkspaceState(
+        normalizedGraph,
+        normalizedLayout,
+        [createSnapshot(normalizedGraph, normalizedLayout)],
+        0,
+        persistedProjectBaseline,
+      );
+    },
+
+    markPersistedBaseline: () => {
+      const state = get();
+      const persistedProjectBaseline = createProjectComparisonSignature(
+        state.graph,
+        state.layout,
+      );
+
+      applyWorkspaceState(
+        state.graph,
+        state.layout,
+        state.history,
+        state.historyIndex,
+        persistedProjectBaseline,
+      );
     },
 
     onNodesChange: (changes) => {

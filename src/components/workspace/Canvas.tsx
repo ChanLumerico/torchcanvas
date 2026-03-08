@@ -25,6 +25,7 @@ import { useWorkspaceStore, type NetworkNode } from '../../store/workspaceStore'
 import ModuleNode from './ModuleNode';
 import ContainerNode from './ContainerNode';
 import Omnibar from './Omnibar';
+import { TORCHCANVAS_FIT_VIEW_EVENT } from './workspaceEvents';
 
 const nodeTypes = {
   moduleNode: ModuleNode,
@@ -116,6 +117,27 @@ function CanvasInner() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    const handleFitView = () => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (useWorkspaceStore.getState().graph.nodes.length > 0) {
+            reactFlow.fitView({
+              padding: 0.2,
+              duration: 200,
+              includeHiddenNodes: true,
+            });
+          } else {
+            reactFlow.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 150 });
+          }
+        });
+      });
+    };
+
+    window.addEventListener(TORCHCANVAS_FIT_VIEW_EVENT, handleFitView);
+    return () => window.removeEventListener(TORCHCANVAS_FIT_VIEW_EVENT, handleFitView);
+  }, [reactFlow]);
 
   const onDragOver = useCallback((event: DragEvent) => {
     event.preventDefault();

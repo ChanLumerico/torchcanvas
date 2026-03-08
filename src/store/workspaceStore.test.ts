@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { NodeChange } from 'reactflow';
 
 import { getDefaultParams, isContainerModule, type ModuleType } from '../domain/layers';
+import { createEmptyGraphLayout, createEmptyGraphModel } from '../domain/graph/utils';
 import { useWorkspaceStore, type NetworkNode } from './workspaceStore';
 
 function createNode(
@@ -112,5 +113,66 @@ describe('useWorkspaceStore', () => {
       ['image', 'fusion'],
       ['meta', 'fusion'],
     ]);
+  });
+
+  it('resets history and dirty state when replacing the workspace', () => {
+    const store = useWorkspaceStore.getState();
+    store.addNode(createNode('conv', 'Conv2d', 120, 160, 'conv_1'));
+    store.updateNodeAttributeName('conv', 'stem');
+
+    let state = useWorkspaceStore.getState();
+    expect(state.isDirty).toBe(true);
+    expect(state.canUndo).toBe(true);
+
+    const importedGraph = {
+      modelName: 'ImportedModel',
+      nodes: [
+        {
+          id: 'input',
+          moduleType: 'Input' as const,
+          attributeName: 'image',
+          params: getDefaultParams('Input'),
+        },
+      ],
+      edges: [],
+    };
+    const importedLayout = {
+      ...createEmptyGraphLayout(),
+      positionsById: {
+        input: { x: 80, y: 120 },
+      },
+    };
+
+    store.replaceWorkspace(importedGraph, importedLayout);
+    state = useWorkspaceStore.getState();
+
+    expect(state.graph).toEqual(importedGraph);
+    expect(state.layout.selection).toEqual({ nodeId: null, edgeId: null });
+    expect(state.history).toHaveLength(1);
+    expect(state.historyIndex).toBe(0);
+    expect(state.canUndo).toBe(false);
+    expect(state.canRedo).toBe(false);
+    expect(state.isDirty).toBe(false);
+  });
+
+  it('tracks persisted baselines independently from autosave state', () => {
+    const store = useWorkspaceStore.getState();
+    store.addNode(createNode('input', 'Input', 40, 80, 'image'));
+
+    let state = useWorkspaceStore.getState();
+    expect(state.isDirty).toBe(true);
+
+    store.markPersistedBaseline();
+    state = useWorkspaceStore.getState();
+    expect(state.isDirty).toBe(false);
+
+    store.setModelName('RenamedModel');
+    state = useWorkspaceStore.getState();
+    expect(state.isDirty).toBe(true);
+
+    store.resetWorkspace();
+    state = useWorkspaceStore.getState();
+    expect(state.graph).toEqual(createEmptyGraphModel());
+    expect(state.isDirty).toBe(false);
   });
 });
