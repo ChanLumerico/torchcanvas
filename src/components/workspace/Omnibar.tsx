@@ -4,6 +4,7 @@ import type { ModuleType } from '../../store/workspaceStore';
 import clsx from 'clsx';
 
 const MODULES: { category: string; items: ModuleType[] }[] = [
+  { category: 'Containers', items: ['Sequential', 'ModuleList', 'ModuleDict'] },
   { category: 'Data', items: ['Input', 'Output'] },
   { category: 'Convolutional', items: ['Conv2d'] },
   { category: 'Linear', items: ['Linear'] },

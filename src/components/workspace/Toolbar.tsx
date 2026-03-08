@@ -5,7 +5,11 @@ import { useWorkspaceStore } from '../../store/workspaceStore';
 export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => void }) {
   const modelName = useWorkspaceStore((state) => state.modelName);
   const setModelName = useWorkspaceStore((state) => state.setModelName);
-  
+  const undo = useWorkspaceStore((state) => state.undo);
+  const redo = useWorkspaceStore((state) => state.redo);
+  const canUndo = useWorkspaceStore((state) => state.canUndo);
+  const canRedo = useWorkspaceStore((state) => state.canRedo);
+
   const [isEditing, setIsEditing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -25,23 +29,23 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
     if (e.key === 'Enter') handleRenameSubmit();
     if (e.key === 'Escape') {
       setIsEditing(false);
-      if (!modelName.trim()) setModelName('GeneratedModel'); // basic fallback
+      if (!modelName.trim()) setModelName('GeneratedModel');
     }
   };
 
   return (
     <header className="h-14 border-b border-border/80 flex items-center justify-between px-4 shrink-0 bg-panel/80 z-20 backdrop-blur-md">
       <div className="flex items-center gap-4">
-        <button 
-          onClick={onExitWorkspace} 
+        <button
+          onClick={onExitWorkspace}
           className="text-xs font-semibold text-textMuted hover:text-white transition-colors flex items-center gap-1"
         >
           <span className="text-[10px]">←</span> Home
         </button>
         <div className="h-4 w-px bg-border flex-shrink-0" />
-        
+
         {isEditing ? (
-          <input 
+          <input
             ref={inputRef}
             value={modelName}
             onChange={(e) => setModelName(e.target.value)}
@@ -50,7 +54,7 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
             className="text-sm font-semibold text-white tracking-wide bg-black/40 border border-primary/50 rounded px-2 py-0.5 focus:outline-none w-48"
           />
         ) : (
-          <button 
+          <button
             onClick={() => setIsEditing(true)}
             className="group flex items-center gap-2 px-2 py-0.5 rounded hover:bg-white/5 transition-colors"
           >
@@ -58,17 +62,27 @@ export default function Toolbar({ onExitWorkspace }: { onExitWorkspace: () => vo
             <PencilLine className="w-3 h-3 text-textMuted opacity-0 group-hover:opacity-100 transition-opacity" />
           </button>
         )}
-        
+
         <span className="px-2 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/20 text-[10px] font-bold uppercase ml-2">Beta</span>
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Mock Undo/Redo Buttons (Visually active but dummy logic for now) */}
+        {/* Undo / Redo */}
         <div className="flex items-center bg-black/20 rounded-lg p-1 border border-border/50 mr-4">
-          <button className="p-1.5 text-textMuted hover:text-white hover:bg-white/10 rounded transition-colors group relative" title="Undo (Cmd+Z)">
+          <button
+            onClick={undo}
+            disabled={!canUndo}
+            title="Undo (Cmd+Z)"
+            className="p-1.5 text-textMuted hover:text-white hover:bg-white/10 rounded transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
+          >
             <Undo2 className="w-4 h-4" />
           </button>
-          <button className="p-1.5 text-textMuted/30 cursor-not-allowed rounded transition-colors group relative" title="Redo (Cmd+Shift+Z)">
+          <button
+            onClick={redo}
+            disabled={!canRedo}
+            title="Redo (Cmd+Shift+Z)"
+            className="p-1.5 text-textMuted hover:text-white hover:bg-white/10 rounded transition-colors disabled:opacity-25 disabled:cursor-not-allowed"
+          >
             <Redo2 className="w-4 h-4" />
           </button>
         </div>

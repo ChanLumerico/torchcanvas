@@ -1,19 +1,108 @@
 import { useState } from 'react';
 import { useWorkspaceStore } from '../../store/workspaceStore';
-import { Settings, Info } from 'lucide-react';
+import { Settings, Info, Trash2, ArrowRight, GitBranch } from 'lucide-react';
+import { TYPE_COLORS } from '../../store/workspaceStore';
+import type { ModuleType } from '../../store/workspaceStore';
 import clsx from 'clsx';
 
 function getDocLink(type: string) {
   return `https://pytorch.org/docs/stable/generated/torch.nn.${type}.html`;
 }
 
+// ── Edge Inspector Panel ──────────────────────────────────────────────────────
+function EdgePanel({ edgeId }: { edgeId: string }) {
+  const edges = useWorkspaceStore(s => s.edges);
+  const nodes = useWorkspaceStore(s => s.nodes);
+  const deleteEdgeById = useWorkspaceStore(s => s.deleteEdgeById);
+
+  const edge = edges.find(e => e.id === edgeId);
+  if (!edge) return null;
+
+  const sourceNode = nodes.find(n => n.id === edge.source);
+  const targetNode = nodes.find(n => n.id === edge.target);
+  const sourceType = sourceNode?.data.type ?? 'Unknown';
+  const targetType = targetNode?.data.type ?? 'Unknown';
+  const srcColor = TYPE_COLORS[sourceType as ModuleType] ?? '#6b7280';
+  const tgtColor = TYPE_COLORS[targetType as ModuleType] ?? '#6b7280';
+  const edgeColor = (edge.style as any)?.stroke ?? srcColor;
+
+  return (
+    <aside className="w-72 border-l border-border/80 bg-panel/40 flex flex-col z-10 overflow-hidden">
+      {/* Header */}
+      <div className="p-4 border-b border-border/50 shadow-sm flex items-center justify-between bg-panel/80">
+        <div className="flex items-center gap-2 text-textMuted">
+          <GitBranch className="w-4 h-4" />
+          <h2 className="text-xs font-bold uppercase tracking-wider">Edge</h2>
+        </div>
+        <span className="text-[10px] font-mono bg-white/5 text-textMuted/60 px-2 py-0.5 rounded truncate max-w-[130px]">{edgeId}</span>
+      </div>
+
+      <div className="p-4 flex-1 overflow-y-auto custom-scrollbar space-y-6">
+        {/* Visual arrow */}
+        <div className="flex items-center gap-2 p-3 rounded-xl border"
+          style={{ borderColor: `${edgeColor}30`, background: `${edgeColor}08` }}>
+          {/* Source */}
+          <div className="flex flex-col items-center gap-1 flex-1 min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full" style={{ background: srcColor }} />
+            <span className="text-[10px] font-mono font-bold" style={{ color: srcColor }}>{sourceType}</span>
+            <span className="text-[9px] text-textMuted/50 truncate w-full text-center">{sourceNode?.data.attributeName}</span>
+          </div>
+          <ArrowRight className="w-4 h-4 flex-shrink-0" style={{ color: edgeColor }} />
+          {/* Target */}
+          <div className="flex flex-col items-center gap-1 flex-1 min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full" style={{ background: tgtColor }} />
+            <span className="text-[10px] font-mono font-bold" style={{ color: tgtColor }}>{targetType}</span>
+            <span className="text-[9px] text-textMuted/50 truncate w-full text-center">{targetNode?.data.attributeName}</span>
+          </div>
+        </div>
+
+        {/* Info table */}
+        <div className="space-y-2">
+          <label className="text-[10px] font-bold uppercase tracking-wider text-textMuted/60 block mb-2">Properties</label>
+          {[
+            ['Type', edge.type ?? 'smoothstep'],
+            ['Animated', String(edge.animated ?? false)],
+            ['Source Shape', sourceNode?.data.outputShape ?? '—'],
+            ['Target Shape', targetNode?.data.outputShape ?? '—'],
+          ].map(([k, v]) => (
+            <div key={k} className="flex justify-between items-center text-[10px] font-mono py-1 border-b border-border/20">
+              <span className="text-textMuted/60">{k}</span>
+              <span className="text-white/80 font-semibold">{v}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Delete */}
+        <div className="pt-4 border-t border-border/30">
+          <p className="text-[9px] text-textMuted/40 mb-3">
+            You can also select the edge and press <kbd className="px-1 py-0.5 bg-white/5 border border-border/40 rounded text-[8px] font-mono">Delete</kbd> to remove it.
+          </p>
+          <button
+            onClick={() => deleteEdgeById(edgeId)}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/5 text-red-400 text-xs font-semibold hover:bg-red-500/15 hover:border-red-500/50 transition-all"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Delete Connection
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+
 export default function Inspector() {
   const selectedNodeId = useWorkspaceStore((state) => state.selectedNodeId);
+  const selectedEdgeId = useWorkspaceStore((state) => state.selectedEdgeId);
   const nodes = useWorkspaceStore((state) => state.nodes);
   const updateNodeParams = useWorkspaceStore((state) => state.updateNodeParams);
   const updateNodeAttributeName = useWorkspaceStore((state) => state.updateNodeAttributeName);
   const modelName = useWorkspaceStore((state) => state.modelName);
   const setModelName = useWorkspaceStore((state) => state.setModelName);
+  const deleteNodeById = useWorkspaceStore((state) => state.deleteNodeById);
+
+  // If an edge is selected, show the edge panel
+  if (selectedEdgeId) return <EdgePanel edgeId={selectedEdgeId} />;
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
 
@@ -36,12 +125,11 @@ export default function Inspector() {
             />
             <p className="text-[10px] text-textMuted/60 mt-1">This will be used as the Python class name.</p>
           </div>
-          
           <div className="flex-1 flex flex-col items-center justify-center text-textMuted/50 text-[10px] text-center px-4">
             <div className="w-12 h-12 rounded-full border border-dashed border-border/50 mb-3 flex items-center justify-center">
               <Settings className="w-5 h-5 opacity-50" />
             </div>
-            Select a layer on the canvas to edit its specific properties
+            Select a layer or connection to inspect its properties
           </div>
         </div>
       </aside>
@@ -53,6 +141,7 @@ export default function Inspector() {
   const handleParamChange = (key: string, value: string | boolean | number) => {
     updateNodeParams(selectedNode.id, { [key]: value });
   };
+
 
   return (
     <aside className="w-72 border-l border-border/80 bg-panel/40 flex flex-col z-10 overflow-hidden">
@@ -118,6 +207,20 @@ export default function Inspector() {
         )}
 
         <InternalStatesSection type={type} params={params} />
+
+        {/* Delete node section */}
+        <div className="mt-8 pt-4 border-t border-border/30">
+          <p className="text-[9px] text-textMuted/40 mb-3 leading-relaxed">
+            Select an edge and press <kbd className="px-1 py-0.5 bg-white/5 border border-border/40 rounded text-[8px] font-mono">Delete</kbd> or <kbd className="px-1 py-0.5 bg-white/5 border border-border/40 rounded text-[8px] font-mono">Backspace</kbd> to remove it.
+          </p>
+          <button
+            onClick={() => deleteNodeById(selectedNode.id)}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/5 text-red-400 text-xs font-semibold hover:bg-red-500/15 hover:border-red-500/50 transition-all"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Delete Node
+          </button>
+        </div>
       </div>
     </aside>
   );

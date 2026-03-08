@@ -1,15 +1,18 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import ReactFlow, { Background, Controls, MiniMap, ReactFlowProvider } from 'reactflow';
+import ReactFlow, { Background, Controls, MiniMap, ReactFlowProvider, useReactFlow } from 'reactflow';
+import type { Node } from 'reactflow';
 import 'reactflow/dist/style.css';
 
 import { useWorkspaceStore, TYPE_COLORS } from '../../store/workspaceStore';
 import type { ModuleType, NetworkNode } from '../../store/workspaceStore';
 import ModuleNode from './ModuleNode';
+import ContainerNode from './ContainerNode';
 import Omnibar from './Omnibar';
 
 const nodeTypes = {
   moduleNode: ModuleNode,
+  containerNode: ContainerNode,
 };
 
 let id = 10;
@@ -17,6 +20,7 @@ const getId = () => `dndnode_${id++}`;
 
 function CanvasInner() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const reactFlow = useReactFlow();
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
   const [omnibarPos, setOmnibarPos] = useState<{ x: number, y: number, flowX: number, flowY: number } | null>(null);
   
@@ -29,11 +33,42 @@ function CanvasInner() {
   const onEdgesDelete = useWorkspaceStore((state) => state.onEdgesDelete);
   const addNode = useWorkspaceStore((state) => state.addNode);
   const setSelectedNode = useWorkspaceStore((state) => state.setSelectedNode);
+  const setSelectedEdge = useWorkspaceStore((state) => state.setSelectedEdge);
+  const reparentNode = useWorkspaceStore((state) => state.reparentNode);
+
+  // ── Keyboard shortcuts for undo / redo ─────────────────────────────────
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) return;
+      if (e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        useWorkspaceStore.getState().undo();
+      } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
+        e.preventDefault();
+        useWorkspaceStore.getState().redo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const onDragOver = useCallback((event: DragEvent) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
   }, []);
+
+  const onNodeDragStop = useCallback((_event: React.MouseEvent, node: NetworkNode) => {
+    // Check if the node was dropped over a container
+    if (node.type === 'containerNode') return; // Cannot put container in container for now
+
+    const intersections = reactFlow.getIntersectingNodes(node);
+    const container = intersections.find((n: Node) => n.type === 'containerNode');
+    
+    // If dropped inside a container, put it there, else unparent it
+    reparentNode(node.id, container ? container.id : undefined);
+  }, [reactFlow, reparentNode]);
 
   const onDrop = useCallback(
     (event: DragEvent) => {
@@ -55,9 +90,11 @@ function CanvasInner() {
       const sameTypeNodes = nodes.filter(n => n.data.type === type);
       const attrName = `${type.toLowerCase()}_${sameTypeNodes.length + 1}`;
 
+      const isContainer = ['Sequential', 'ModuleList', 'ModuleDict'].includes(type);
+
       const newNode: NetworkNode = {
         id: getId(),
-        type: 'moduleNode',
+        type: isContainer ? 'containerNode' : 'moduleNode',
         position,
         data: { type, attributeName: attrName, params: getDefaultParams(type) },
       };
@@ -102,9 +139,11 @@ function CanvasInner() {
     const sameTypeNodes = nodes.filter(n => n.data.type === type);
     const attrName = `${type.toLowerCase()}_${sameTypeNodes.length + 1}`;
 
+    const isContainer = ['Sequential', 'ModuleList', 'ModuleDict'].includes(type);
+
     const newNode: NetworkNode = {
       id: getId(),
-      type: 'moduleNode',
+      type: isContainer ? 'containerNode' : 'moduleNode',
       position: { x: omnibarPos.flowX, y: omnibarPos.flowY },
       data: { type, attributeName: attrName, params: getDefaultParams(type) },
     };
@@ -122,6 +161,7 @@ function CanvasInner() {
           onClose={() => setOmnibarPos(null)} 
         />
       )}
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -133,8 +173,10 @@ function CanvasInner() {
         onInit={setReactFlowInstance}
         onDrop={onDrop}
         onDragOver={onDragOver}
+        onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
         onPaneContextMenu={onPaneContextMenu}
+        onEdgeClick={(_evt, edge) => setSelectedEdge(edge.id)}
         nodeTypes={nodeTypes}
         fitView
       >
@@ -148,7 +190,13 @@ function CanvasInner() {
           className="!bg-panel !border-border !shadow-2xl rounded-xl overflow-hidden !m-4" 
           style={{ width: 140, height: 100 }}
           maskColor="rgba(0, 0, 0, 0.4)" 
-          nodeColor={(node: any) => TYPE_COLORS[node.data.type as ModuleType] || '#EE4C2C'} 
+          nodeColor={(node: any) => {
+            const type = node.data?.type;
+            const connected = node.data?.connected;
+            const alwaysColored = type === 'Input' || type === 'Output';
+            if (!connected && !alwaysColored) return '#4B5563';
+            return TYPE_COLORS[type as ModuleType] ?? '#EE4C2C';
+          }} 
         />
       </ReactFlow>
     </div>

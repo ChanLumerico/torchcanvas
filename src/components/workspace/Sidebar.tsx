@@ -45,6 +45,7 @@ const MODULES_CATEGORIES = [
     ] 
   },
   { category: 'Merge', items: ['Concat'] },
+  { category: 'Containers', items: ['Sequential', 'ModuleList', 'ModuleDict'] },
 ] as const;
 
 export default function Sidebar() {

@@ -1,8 +1,23 @@
 import type { NetworkNode, Edge, ModuleType } from '../store/workspaceStore';
 
 export function inferShapes(nodes: NetworkNode[], edges: Edge[]): NetworkNode[] {
-  // Deep clone nodes to update shapes
-  const updatedNodes: NetworkNode[] = nodes.map(n => ({ ...n, data: { ...n.data, outputShape: undefined, shapeError: false } }));
+  // Build connectivity set: all node IDs that participate in at least one edge
+  const connectedIds = new Set<string>();
+  edges.forEach(e => {
+    connectedIds.add(e.source);
+    connectedIds.add(e.target);
+  });
+
+  // Deep clone nodes to update shapes + connectivity
+  const updatedNodes: NetworkNode[] = nodes.map(n => ({
+    ...n,
+    data: {
+      ...n.data,
+      outputShape: undefined,
+      shapeError: false,
+      connected: connectedIds.has(n.id),
+    }
+  }));
 
   const adjacencyList = new Map<string, string[]>();
   const reverseList = new Map<string, string[]>();
