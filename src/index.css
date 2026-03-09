@@ -39,15 +39,15 @@
   }
 
   .container-chip-shifted {
-    filter: saturate(1.05);
+    filter: none;
   }
 
   .container-chip-ghost {
-    filter: saturate(0.92);
+    filter: none;
   }
 
   .container-chip-drag-source-hidden {
-    filter: saturate(0.72) brightness(0.82);
+    filter: none;
   }
 
   .container-drop-slot {

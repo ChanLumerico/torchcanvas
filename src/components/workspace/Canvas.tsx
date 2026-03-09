@@ -12,6 +12,7 @@ import type {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
+import { inferGraphNodeMeta } from '../../compiler/shapeInference';
 import {
   createDefaultAttributeName,
   getDefaultParams,
@@ -56,6 +57,12 @@ type DragOverlayState = {
 
 let id = 10;
 const getId = () => `dndnode_${id++}`;
+const EMPTY_SEQUENTIAL_PREVIEW_INSET_Y = 24;
+const CONTAINER_PREVIEW_HEIGHT_TRANSITION =
+  'height 300ms cubic-bezier(0.22, 1.18, 0.36, 1)';
+const NODE_PREVIEW_MOTION_TRANSITION =
+  'transform 300ms cubic-bezier(0.22, 1.18, 0.36, 1)';
+const NODE_PREVIEW_STYLE_TRANSITION = 'box-shadow 220ms ease, opacity 220ms ease';
 
 function hexToRgba(hex: string, alpha: number): string {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -190,7 +197,11 @@ function CanvasInner() {
     return () => window.clearTimeout(timeoutId);
   }, [recentContainerInsertion]);
 
-  const derivedEdges = useMemo(() => graphToDerivedSequentialEdges(graph), [graph]);
+  const graphMetaByNodeId = useMemo(() => inferGraphNodeMeta(graph), [graph]);
+  const derivedEdges = useMemo(
+    () => graphToDerivedSequentialEdges(graph, graphMetaByNodeId),
+    [graph, graphMetaByNodeId],
+  );
   const displayedEdges = useMemo(() => [...edges, ...derivedEdges], [derivedEdges, edges]);
   const previewState = useMemo(() => {
     const previewMotionByNodeId = new Map<
@@ -208,11 +219,13 @@ function CanvasInner() {
           height: number;
           width: number;
           left: number;
+          mode: 'slot' | 'empty-centered';
         }
       | null = null;
+    const previewContainerHeightByNodeId = new Map<string, number>();
 
     if (!dragPreviewType) {
-      return { previewMotionByNodeId, previewSlot };
+      return { previewMotionByNodeId, previewSlot, previewContainerHeightByNodeId };
     }
 
     const layoutIndex = buildContainerLayoutIndex(graph);
@@ -256,17 +269,19 @@ function CanvasInner() {
     }
 
     if (!containerDropTarget) {
-      return { previewMotionByNodeId, previewSlot };
+      return { previewMotionByNodeId, previewSlot, previewContainerHeightByNodeId };
     }
 
     const targetContainerNode = graphNodeById.get(containerDropTarget.containerId);
     if (!targetContainerNode) {
-      return { previewMotionByNodeId, previewSlot };
+      return { previewMotionByNodeId, previewSlot, previewContainerHeightByNodeId };
     }
 
     const targetBehavior = getNodeBehavior(targetContainerNode.moduleType);
     const targetChildren = getOrderedContainerChildren(graph, containerDropTarget.containerId);
     const sameContainerReorder = draggingNode?.containerId === containerDropTarget.containerId;
+    const useEmptySequentialPreview =
+      targetContainerNode.moduleType === 'Sequential' && targetChildren.length === 0;
     const filteredTargetChildren = sameContainerReorder
       ? targetChildren.filter((childNode) => childNode.id !== draggingNodeId)
       : targetChildren;
@@ -277,6 +292,9 @@ function CanvasInner() {
       }))
       .filter((entry): entry is { node: (typeof filteredTargetChildren)[number]; layout: NonNullable<typeof entry.layout> } => Boolean(entry.layout));
 
+    const targetDimensions =
+      layoutIndex.dimensionsByNodeId.get(targetContainerNode.id) ??
+      targetBehavior.getContainerDimensions(targetChildren.length);
     const previewTop =
       targetChildLayouts.length === 0
         ? CONTAINER_LAYOUT.stackTop
@@ -287,25 +305,22 @@ function CanvasInner() {
           : targetChildLayouts[containerDropTarget.insertAt].layout.position.y;
 
     const previewWidth =
-      draggingDimensions?.width ??
-      (draggingIsContainer
-        ? CONTAINER_LAYOUT.width - CONTAINER_LAYOUT.paddingX * 2
-        : targetBehavior.getChildWidth());
+      useEmptySequentialPreview
+        ? targetBehavior.getChildWidth()
+        : (draggingDimensions?.width ??
+          (draggingIsContainer
+            ? CONTAINER_LAYOUT.width - CONTAINER_LAYOUT.paddingX * 2
+            : targetBehavior.getChildWidth()));
     const previewLeft =
-      draggingNode && draggingNode.containerId === containerDropTarget.containerId
+      useEmptySequentialPreview
+        ? targetBehavior.getChildLeft()
+        : draggingNode && draggingNode.containerId === containerDropTarget.containerId
         ? (layoutIndex.childLayoutsByNodeId.get(draggingNode.id)?.position.x ??
           (draggingIsContainer ? CONTAINER_LAYOUT.paddingX : targetBehavior.getChildLeft()))
         : draggingIsContainer
           ? CONTAINER_LAYOUT.paddingX
           : targetBehavior.getChildLeft();
-
-    previewSlot = {
-      containerId: containerDropTarget.containerId,
-      top: previewTop,
-      height: previewHeight,
-      width: previewWidth,
-      left: previewLeft,
-    };
+    const previewSlotHeight = previewHeight;
 
     if (sameContainerReorder && draggingNode) {
       const sourceIndex = targetChildren.findIndex((childNode) => childNode.id === draggingNode.id);
@@ -334,77 +349,182 @@ function CanvasInner() {
           });
         }
       });
-
-      return { previewMotionByNodeId, previewSlot };
+    } else {
+      targetChildren.forEach((childNode, index) => {
+        if (index >= containerDropTarget.insertAt) {
+          previewMotionByNodeId.set(childNode.id, {
+            offsetY: previewShiftAmount,
+            shifted: true,
+            ghost: false,
+          });
+        }
+      });
     }
 
-    targetChildren.forEach((childNode, index) => {
-      if (index >= containerDropTarget.insertAt) {
-        previewMotionByNodeId.set(childNode.id, {
-          offsetY: previewShiftAmount,
-          shifted: true,
-          ghost: false,
-        });
+    const maxShiftedChildBottom = targetChildren.reduce((maxBottom, childNode) => {
+      const childLayout = layoutIndex.childLayoutsByNodeId.get(childNode.id);
+      if (!childLayout) {
+        return maxBottom;
       }
-    });
 
-    return { previewMotionByNodeId, previewSlot };
+      const offsetY = previewMotionByNodeId.get(childNode.id)?.offsetY ?? 0;
+      return Math.max(
+        maxBottom,
+        childLayout.position.y + childLayout.dimensions.height + offsetY,
+      );
+    }, 0);
+
+    let requiredTargetHeight = targetDimensions.height;
+    let previewSlotTop = previewTop;
+
+    if (useEmptySequentialPreview) {
+      requiredTargetHeight = Math.max(
+        requiredTargetHeight,
+        CONTAINER_LAYOUT.headerHeight + EMPTY_SEQUENTIAL_PREVIEW_INSET_Y * 2 + previewSlotHeight,
+      );
+      previewSlotTop =
+        CONTAINER_LAYOUT.headerHeight +
+        Math.max(
+          EMPTY_SEQUENTIAL_PREVIEW_INSET_Y,
+          Math.round(
+            (requiredTargetHeight - CONTAINER_LAYOUT.headerHeight - previewSlotHeight) / 2,
+          ),
+        );
+    }
+
+    const maxOccupiedBottom = Math.max(
+      maxShiftedChildBottom,
+      previewSlotTop + previewSlotHeight,
+    );
+    requiredTargetHeight = Math.max(
+      requiredTargetHeight,
+      Math.ceil(maxOccupiedBottom + CONTAINER_LAYOUT.bottomPadding),
+    );
+
+    if (useEmptySequentialPreview) {
+      previewSlotTop =
+        CONTAINER_LAYOUT.headerHeight +
+        Math.max(
+          EMPTY_SEQUENTIAL_PREVIEW_INSET_Y,
+          Math.round(
+            (requiredTargetHeight - CONTAINER_LAYOUT.headerHeight - previewSlotHeight) / 2,
+          ),
+        );
+    }
+
+    if (
+      targetContainerNode.moduleType === 'Sequential' &&
+      requiredTargetHeight > targetDimensions.height
+    ) {
+      previewContainerHeightByNodeId.set(
+        targetContainerNode.id,
+        Math.ceil(requiredTargetHeight),
+      );
+    }
+
+    previewSlot = {
+      containerId: containerDropTarget.containerId,
+      top: previewSlotTop,
+      height: previewSlotHeight,
+      width: previewWidth,
+      left: previewLeft,
+      mode: useEmptySequentialPreview ? 'empty-centered' : 'slot',
+    };
+
+    return {
+      previewMotionByNodeId,
+      previewSlot,
+      previewContainerHeightByNodeId,
+    };
   }, [containerDropTarget, dragPreviewType, draggingNodeId, graph]);
   const displayedNodes = useMemo(
     () =>
-      nodes.map((node) => ({
-        ...node,
-        position: previewState.previewMotionByNodeId.has(node.id)
-          ? {
-              ...node.position,
-              y:
-                node.position.y +
-                (previewState.previewMotionByNodeId.get(node.id)?.offsetY ?? 0),
-            }
-          : node.position,
-        style: {
-          ...(node.style ?? {}),
-          ...(previewState.previewMotionByNodeId.has(node.id)
+      nodes.map((node) => {
+        const previewMotion = previewState.previewMotionByNodeId.get(node.id);
+        const previewExpandedHeight =
+          node.type === 'containerNode'
+            ? previewState.previewContainerHeightByNodeId.get(node.id)
+            : undefined;
+        const wrapperTransitions =
+          node.type === 'containerNode'
+            ? [CONTAINER_PREVIEW_HEIGHT_TRANSITION]
+            : [];
+
+        if (previewMotion) {
+          if (!previewMotion.ghost) {
+            wrapperTransitions.push(NODE_PREVIEW_MOTION_TRANSITION);
+          }
+          wrapperTransitions.push(NODE_PREVIEW_STYLE_TRANSITION);
+        }
+
+        return {
+          ...node,
+          position: previewMotion
             ? {
-                transition:
-                  previewState.previewMotionByNodeId.get(node.id)?.ghost
-                    ? 'box-shadow 220ms ease, opacity 220ms ease'
-                    : 'transform 300ms cubic-bezier(0.22, 1.18, 0.36, 1), box-shadow 220ms ease, opacity 220ms ease',
+                ...node.position,
+                y: node.position.y + previewMotion.offsetY,
               }
-            : {}),
-        },
-        data: {
-          ...node.data,
-          isDropTarget:
-            node.type === 'containerNode' && containerDropTarget?.containerId === node.id,
-          dropPreviewIndex:
-            node.type === 'containerNode' && containerDropTarget?.containerId === node.id
-              ? containerDropTarget.insertAt
-              : null,
-          dropPreviewTop:
-            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-              ? previewState.previewSlot.top
-              : null,
-          dropPreviewHeight:
-            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-              ? previewState.previewSlot.height
-              : null,
-          dropPreviewWidth:
-            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-              ? previewState.previewSlot.width
-              : null,
-          dropPreviewLeft:
-            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-              ? previewState.previewSlot.left
-            : null,
-          pulseContainer: recentContainerInsertion?.containerId === node.id,
-          pulseChild: recentContainerInsertion?.childId === node.id,
-          previewShifted: previewState.previewMotionByNodeId.get(node.id)?.shifted,
-          previewGhost: previewState.previewMotionByNodeId.get(node.id)?.ghost,
-          dragSourceHidden: dragOverlay?.nodeId === node.id,
-        },
-      })),
-    [containerDropTarget, dragOverlay?.nodeId, nodes, previewState.previewMotionByNodeId, previewState.previewSlot, recentContainerInsertion],
+            : node.position,
+          style: {
+            ...(node.style ?? {}),
+            ...(typeof previewExpandedHeight === 'number'
+              ? {
+                  height: previewExpandedHeight,
+                }
+              : {}),
+            ...(wrapperTransitions.length > 0
+              ? {
+                  transition: wrapperTransitions.join(', '),
+                }
+              : {}),
+          },
+          data: {
+            ...node.data,
+            isDropTarget:
+              node.type === 'containerNode' && containerDropTarget?.containerId === node.id,
+            dropPreviewIndex:
+              node.type === 'containerNode' && containerDropTarget?.containerId === node.id
+                ? containerDropTarget.insertAt
+                : null,
+            dropPreviewTop:
+              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+                ? previewState.previewSlot.top
+                : null,
+            dropPreviewHeight:
+              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+                ? previewState.previewSlot.height
+                : null,
+            dropPreviewWidth:
+              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+                ? previewState.previewSlot.width
+                : null,
+            dropPreviewLeft:
+              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+                ? previewState.previewSlot.left
+                : null,
+            dropPreviewMode:
+              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+                ? previewState.previewSlot.mode
+                : undefined,
+            pulseContainer: recentContainerInsertion?.containerId === node.id,
+            pulseChild: recentContainerInsertion?.childId === node.id,
+            previewShifted: previewMotion?.shifted,
+            previewGhost: previewMotion?.ghost,
+            dragSourceHidden: dragOverlay?.nodeId === node.id,
+            previewExpanded:
+              node.type === 'containerNode' && typeof previewExpandedHeight === 'number',
+          },
+        };
+      }),
+    [
+      containerDropTarget,
+      dragOverlay?.nodeId,
+      nodes,
+      previewState.previewContainerHeightByNodeId,
+      previewState.previewMotionByNodeId,
+      previewState.previewSlot,
+      recentContainerInsertion,
+    ],
   );
 
   const getFlowPosition = useCallback(
@@ -466,6 +586,13 @@ function CanvasInner() {
     setRecentContainerInsertion({ containerId, childId });
   }, []);
 
+  const clearDragPreviewState = useCallback(() => {
+    setContainerDropTarget(null);
+    setDraggingNodeId(null);
+    setDragPreviewType(null);
+    setDragOverlay(null);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().includes('MAC');
@@ -508,6 +635,20 @@ function CanvasInner() {
     return () => window.removeEventListener(TORCHCANVAS_FIT_VIEW_EVENT, handleFitView);
   }, [reactFlow]);
 
+  useEffect(() => {
+    const handleNativeDragFinish = () => {
+      clearDragPreviewState();
+    };
+
+    window.addEventListener('dragend', handleNativeDragFinish);
+    window.addEventListener('drop', handleNativeDragFinish);
+
+    return () => {
+      window.removeEventListener('dragend', handleNativeDragFinish);
+      window.removeEventListener('drop', handleNativeDragFinish);
+    };
+  }, [clearDragPreviewState]);
+
   const onDragOver = useCallback(
     (event: DragEvent) => {
       event.preventDefault();
@@ -523,10 +664,9 @@ function CanvasInner() {
   const onDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
     const nextTarget = event.relatedTarget;
     if (!nextTarget || !reactFlowWrapper.current?.contains(nextTarget as Node)) {
-      setContainerDropTarget(null);
-      setDragPreviewType(null);
+      clearDragPreviewState();
     }
-  }, []);
+  }, [clearDragPreviewState]);
 
   const updateDragOverlay = useCallback(
     (event: ReactMouseEvent, node: NetworkNode) => {
@@ -632,12 +772,9 @@ function CanvasInner() {
         reparentNode(node.id, undefined, { absolutePosition });
       }
 
-      setContainerDropTarget(null);
-      setDraggingNodeId(null);
-      setDragPreviewType(null);
-      setDragOverlay(null);
+      clearDragPreviewState();
     },
-    [containerDropTarget, dragOverlay, getFlowPosition, reparentNode, resolveContainerDropTarget, triggerContainerInsertionPulse],
+    [clearDragPreviewState, containerDropTarget, dragOverlay, getFlowPosition, reparentNode, resolveContainerDropTarget, triggerContainerInsertionPulse],
   );
 
   const createWorkspaceNode = useCallback(
@@ -661,9 +798,7 @@ function CanvasInner() {
 
       const type = event.dataTransfer.getData('application/reactflow') as ModuleType;
       if (!type) {
-        setContainerDropTarget(null);
-        setDragPreviewType(null);
-        setDragOverlay(null);
+        clearDragPreviewState();
         return;
       }
 
@@ -683,13 +818,12 @@ function CanvasInner() {
       if (target) {
         triggerContainerInsertionPulse(target.containerId, node.id);
       }
-      setContainerDropTarget(null);
-      setDragPreviewType(null);
-      setDragOverlay(null);
+      clearDragPreviewState();
       revealNode(position.x, position.y);
     },
     [
       addNode,
+      clearDragPreviewState,
       createWorkspaceNode,
       getFlowPosition,
       revealNode,

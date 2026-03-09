@@ -53,7 +53,7 @@ function materializeWorkspace(graph: GraphModel, layout: GraphLayoutState) {
     selectedNodeId: layout.selection.nodeId,
     selectedEdgeId: layout.selection.edgeId,
     nodes: graphToReactFlowNodes(graph, layout, metaByNodeId),
-    edges: graphToReactFlowEdges(graph, layout),
+    edges: graphToReactFlowEdges(graph, layout, metaByNodeId),
   };
 }
 

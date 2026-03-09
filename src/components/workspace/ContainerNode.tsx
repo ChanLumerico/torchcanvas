@@ -1,12 +1,13 @@
 import { memo } from 'react';
-import { Handle, Position } from 'reactflow';
+import { Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import { BoxSelect } from 'lucide-react';
 import clsx from 'clsx';
 
 import { getLayerColor } from '../../domain/layers';
-import type { ModuleData } from '../../domain/graph/reactFlowAdapter';
+import { ACTIVE_CONTAINER_ACCENT, type ModuleData } from '../../domain/graph/reactFlowAdapter';
 import { CONTAINER_LAYOUT, getNodeBehavior } from '../../domain/nodes';
+import { HiddenSequentialHandle, VisibleNodeHandle } from './NodeHandle';
 
 function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
   const {
@@ -20,10 +21,12 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
     dropPreviewHeight,
     dropPreviewWidth,
     dropPreviewLeft,
+    dropPreviewMode,
     pulseContainer,
     previewShifted,
     previewGhost,
     dragSourceHidden,
+    previewExpanded,
   } = data;
   const color = getLayerColor(type);
   const isActive = Boolean(connected || isDropTarget);
@@ -42,7 +45,8 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
         ? containerBehavior.getChildLeft()
         : CONTAINER_LAYOUT.paddingX;
   const previewHeight = typeof dropPreviewHeight === 'number' ? dropPreviewHeight : CONTAINER_LAYOUT.childHeight;
-  const activeColor = isActive ? '#94A3B8' : color;
+  const activeColor = isActive ? ACTIVE_CONTAINER_ACCENT : color;
+  const handleColor = isActive ? activeColor : color;
 
   return (
     <div
@@ -52,7 +56,9 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
       data-child-count={String(containerChildCount)}
       data-preview-shifted={previewShifted ? 'true' : 'false'}
       data-preview-ghost={previewGhost ? 'true' : 'false'}
+      data-drop-preview-mode={dropPreviewMode ?? 'none'}
       data-drag-source-hidden={dragSourceHidden ? 'true' : 'false'}
+      data-preview-expanded={previewExpanded ? 'true' : 'false'}
       className={clsx(
         'relative w-full h-full rounded-xl border-2 transition-all min-w-[320px] !bg-panel/10 backdrop-blur-sm overflow-visible',
         selected ? 'shadow-[0_0_0_2px_rgba(255,255,255,0.2)]' : 'shadow-lg',
@@ -125,6 +131,7 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
               }}
             />
             <div
+              data-container-drop-slot={dropPreviewMode ?? 'slot'}
               className="absolute rounded-[14px] transition-all duration-200 container-drop-slot"
               style={{
                 top: insertionGuideTop,
@@ -142,37 +149,13 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
 
       {hideHandles ? (
         <>
-          <Handle
-            id="sequential-top"
-            type="target"
-            position={Position.Top}
-            isConnectable={false}
-            style={{ opacity: 0, pointerEvents: 'none' }}
-            className="!w-2 !h-2"
-          />
-          <Handle
-            id="sequential-bottom"
-            type="source"
-            position={Position.Bottom}
-            isConnectable={false}
-            style={{ opacity: 0, pointerEvents: 'none' }}
-            className="!w-2 !h-2"
-          />
+          <HiddenSequentialHandle id="sequential-top" type="target" position={Position.Top} />
+          <HiddenSequentialHandle id="sequential-bottom" type="source" position={Position.Bottom} />
         </>
       ) : (
         <>
-          <Handle
-            type="target"
-            position={Position.Top}
-            className="!w-3.5 !h-3.5 !bg-panel !border-2 transition-colors z-20"
-            style={{ borderColor: isActive ? activeColor : `${color}80`, top: 0 }}
-          />
-          <Handle
-            type="source"
-            position={Position.Bottom}
-            className="!w-3.5 !h-3.5 !bg-panel !border-2 transition-colors z-20"
-            style={{ borderColor: isActive ? activeColor : `${color}80`, bottom: 0 }}
-          />
+          <VisibleNodeHandle type="target" position={Position.Left} color={handleColor} />
+          <VisibleNodeHandle type="source" position={Position.Right} color={handleColor} />
         </>
       )}
     </div>

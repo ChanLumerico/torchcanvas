@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { Handle, Position } from 'reactflow';
+import { Position } from 'reactflow';
 import type { NodeProps } from 'reactflow';
 import { AlertTriangle, Layers, Settings2, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
@@ -8,6 +8,7 @@ import { getLayerColor, type ModuleType } from '../../domain/layers';
 import type { ModuleData } from '../../domain/graph/reactFlowAdapter';
 import { CONTAINER_LAYOUT } from '../../domain/nodes';
 import { useWorkspaceStore } from '../../store/workspaceStore';
+import { HiddenSequentialHandle, VisibleNodeHandle } from './NodeHandle';
 
 function getNodeColor(type: ModuleType, connected: boolean | undefined): string {
   if (!connected) {
@@ -127,37 +128,13 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
 
         {hideHandles ? (
           <>
-            <Handle
-              id="sequential-top"
-              type="target"
-              position={Position.Top}
-              isConnectable={false}
-              style={{ opacity: 0, pointerEvents: 'none' }}
-              className="!w-2 !h-2"
-            />
-            <Handle
-              id="sequential-bottom"
-              type="source"
-              position={Position.Bottom}
-              isConnectable={false}
-              style={{ opacity: 0, pointerEvents: 'none' }}
-              className="!w-2 !h-2"
-            />
+            <HiddenSequentialHandle id="sequential-top" type="target" position={Position.Top} />
+            <HiddenSequentialHandle id="sequential-bottom" type="source" position={Position.Bottom} />
           </>
         ) : (
           <>
-            <Handle
-              type="target"
-              position={Position.Left}
-              style={{ background: '#0f0f0f', borderColor: accentColor }}
-              className="!w-3 !h-3 !border"
-            />
-            <Handle
-              type="source"
-              position={Position.Right}
-              style={{ background: '#0f0f0f', borderColor: accentColor }}
-              className="!w-3 !h-3 !border"
-            />
+            <VisibleNodeHandle type="target" position={Position.Left} color={accentColor} />
+            <VisibleNodeHandle type="source" position={Position.Right} color={accentColor} />
           </>
         )}
       </div>
@@ -244,19 +221,8 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
         </div>
       )}
 
-      <Handle
-        type="target"
-        position={Position.Left}
-        style={{ background: '#0f0f0f', borderColor: accentColor }}
-        className="w-3.5 h-3.5 !border-2"
-      />
-
-      <Handle
-        type="source"
-        position={Position.Right}
-        style={{ background: '#0f0f0f', borderColor: accentColor }}
-        className="w-3.5 h-3.5 !border-2"
-      />
+      <VisibleNodeHandle type="target" position={Position.Left} color={accentColor} />
+      <VisibleNodeHandle type="source" position={Position.Right} color={accentColor} />
     </div>
   );
 }

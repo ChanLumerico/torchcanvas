@@ -18,6 +18,8 @@ import {
   isSequentialChild,
 } from './utils';
 
+export const ACTIVE_CONTAINER_ACCENT = '#94A3B8';
+
 export interface ModuleData {
   type: ModuleType;
   params: LayerParams;
@@ -35,11 +37,13 @@ export interface ModuleData {
   dropPreviewHeight?: number | null;
   dropPreviewWidth?: number | null;
   dropPreviewLeft?: number | null;
+  dropPreviewMode?: 'slot' | 'empty-centered';
   pulseContainer?: boolean;
   pulseChild?: boolean;
   previewShifted?: boolean;
   previewGhost?: boolean;
   dragSourceHidden?: boolean;
+  previewExpanded?: boolean;
 }
 
 export type NetworkNode = ReactFlowNode<ModuleData>;
@@ -87,8 +91,15 @@ function createEdgeStyle(color: string): CSSProperties {
   };
 }
 
-function withAlpha(color: string, alphaHex: string): string {
-  return color.startsWith('#') && color.length === 7 ? `${color}${alphaHex}` : color;
+function getDisplayedNodeAccentColor(
+  node: Pick<GraphNode, 'moduleType'>,
+  meta?: GraphNodePresentationMeta,
+): string {
+  if (isContainerModule(node.moduleType) && meta?.connected) {
+    return ACTIVE_CONTAINER_ACCENT;
+  }
+
+  return getLayerColor(node.moduleType);
 }
 
 export function createGraphNodeFromReactFlowNode(node: NetworkNode): {
@@ -184,6 +195,7 @@ export function graphToReactFlowNodes(
 export function graphToReactFlowEdges(
   graph: GraphModel,
   layout: GraphLayoutState,
+  metaByNodeId?: Record<string, GraphNodePresentationMeta>,
 ): Edge[] {
   const nodeMap = new Map(graph.nodes.map((node) => [node.id, node] as const));
 
@@ -201,19 +213,26 @@ export function graphToReactFlowEdges(
       data: {
         derived: false,
       },
-      style: createEdgeStyle(sourceNode ? getLayerColor(sourceNode.moduleType) : DEFAULT_EDGE_COLOR),
+      style: createEdgeStyle(
+        sourceNode
+          ? getDisplayedNodeAccentColor(sourceNode, metaByNodeId?.[sourceNode.id])
+          : DEFAULT_EDGE_COLOR,
+      ),
     };
   });
 }
 
 export function graphToDerivedSequentialEdges(
   graph: GraphModel,
+  metaByNodeId?: Record<string, GraphNodePresentationMeta>,
 ): Edge[] {
   const nodeMap = new Map(graph.nodes.map((node) => [node.id, node] as const));
 
   return getSequentialDerivedEdgePairs(graph).map((edge) => {
     const containerNode = nodeMap.get(edge.containerId);
-    const containerColor = containerNode ? getLayerColor(containerNode.moduleType) : DEFAULT_EDGE_COLOR;
+    const containerColor = containerNode
+      ? getDisplayedNodeAccentColor(containerNode, metaByNodeId?.[containerNode.id])
+      : DEFAULT_EDGE_COLOR;
 
     return {
       id: `derived:${edge.containerId}:${edge.sourceId}:${edge.targetId}`,
@@ -233,7 +252,7 @@ export function graphToDerivedSequentialEdges(
         readOnly: true,
       },
       style: {
-        stroke: withAlpha(containerColor, 'CC'),
+        stroke: containerColor,
         strokeWidth: 2.25,
       },
     };
