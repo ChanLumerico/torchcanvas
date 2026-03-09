@@ -12,7 +12,6 @@ import type {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { inferGraphNodeMeta } from '../../compiler/shapeInference';
 import {
   createDefaultAttributeName,
   getDefaultParams,
@@ -20,10 +19,7 @@ import {
   isContainerModule,
   type ModuleType,
 } from '../../domain/layers';
-import {
-  graphToDerivedSequentialEdges,
-  type ModuleData,
-} from '../../domain/graph/reactFlowAdapter';
+import { type ModuleData } from '../../domain/graph/reactFlowAdapter';
 import {
   buildContainerLayoutIndex,
   getContainerDropTargetAtPosition,
@@ -57,7 +53,6 @@ type DragOverlayState = {
 
 let id = 10;
 const getId = () => `dndnode_${id++}`;
-const EMPTY_SEQUENTIAL_PREVIEW_INSET_Y = 24;
 const CONTAINER_PREVIEW_HEIGHT_TRANSITION =
   'height 300ms cubic-bezier(0.22, 1.18, 0.36, 1)';
 const NODE_PREVIEW_MOTION_TRANSITION =
@@ -197,12 +192,6 @@ function CanvasInner() {
     return () => window.clearTimeout(timeoutId);
   }, [recentContainerInsertion]);
 
-  const graphMetaByNodeId = useMemo(() => inferGraphNodeMeta(graph), [graph]);
-  const derivedEdges = useMemo(
-    () => graphToDerivedSequentialEdges(graph, graphMetaByNodeId),
-    [graph, graphMetaByNodeId],
-  );
-  const displayedEdges = useMemo(() => [...edges, ...derivedEdges], [derivedEdges, edges]);
   const previewState = useMemo(() => {
     const previewMotionByNodeId = new Map<
       string,
@@ -212,20 +201,10 @@ function CanvasInner() {
         ghost: boolean;
       }
     >();
-    let previewSlot:
-      | {
-          containerId: string;
-          top: number;
-          height: number;
-          width: number;
-          left: number;
-          mode: 'slot' | 'empty-centered';
-        }
-      | null = null;
     const previewContainerHeightByNodeId = new Map<string, number>();
 
     if (!dragPreviewType) {
-      return { previewMotionByNodeId, previewSlot, previewContainerHeightByNodeId };
+      return { previewMotionByNodeId, previewContainerHeightByNodeId };
     }
 
     const layoutIndex = buildContainerLayoutIndex(graph);
@@ -269,19 +248,17 @@ function CanvasInner() {
     }
 
     if (!containerDropTarget) {
-      return { previewMotionByNodeId, previewSlot, previewContainerHeightByNodeId };
+      return { previewMotionByNodeId, previewContainerHeightByNodeId };
     }
 
     const targetContainerNode = graphNodeById.get(containerDropTarget.containerId);
     if (!targetContainerNode) {
-      return { previewMotionByNodeId, previewSlot, previewContainerHeightByNodeId };
+      return { previewMotionByNodeId, previewContainerHeightByNodeId };
     }
 
     const targetBehavior = getNodeBehavior(targetContainerNode.moduleType);
     const targetChildren = getOrderedContainerChildren(graph, containerDropTarget.containerId);
     const sameContainerReorder = draggingNode?.containerId === containerDropTarget.containerId;
-    const useEmptySequentialPreview =
-      targetContainerNode.moduleType === 'Sequential' && targetChildren.length === 0;
     const filteredTargetChildren = sameContainerReorder
       ? targetChildren.filter((childNode) => childNode.id !== draggingNodeId)
       : targetChildren;
@@ -303,24 +280,6 @@ function CanvasInner() {
             targetChildLayouts[targetChildLayouts.length - 1].layout.dimensions.height +
             CONTAINER_LAYOUT.childGap
           : targetChildLayouts[containerDropTarget.insertAt].layout.position.y;
-
-    const previewWidth =
-      useEmptySequentialPreview
-        ? targetBehavior.getChildWidth()
-        : (draggingDimensions?.width ??
-          (draggingIsContainer
-            ? CONTAINER_LAYOUT.width - CONTAINER_LAYOUT.paddingX * 2
-            : targetBehavior.getChildWidth()));
-    const previewLeft =
-      useEmptySequentialPreview
-        ? targetBehavior.getChildLeft()
-        : draggingNode && draggingNode.containerId === containerDropTarget.containerId
-        ? (layoutIndex.childLayoutsByNodeId.get(draggingNode.id)?.position.x ??
-          (draggingIsContainer ? CONTAINER_LAYOUT.paddingX : targetBehavior.getChildLeft()))
-        : draggingIsContainer
-          ? CONTAINER_LAYOUT.paddingX
-          : targetBehavior.getChildLeft();
-    const previewSlotHeight = previewHeight;
 
     if (sameContainerReorder && draggingNode) {
       const sourceIndex = targetChildren.findIndex((childNode) => childNode.id === draggingNode.id);
@@ -374,43 +333,13 @@ function CanvasInner() {
       );
     }, 0);
 
-    let requiredTargetHeight = targetDimensions.height;
-    let previewSlotTop = previewTop;
-
-    if (useEmptySequentialPreview) {
-      requiredTargetHeight = Math.max(
-        requiredTargetHeight,
-        CONTAINER_LAYOUT.headerHeight + EMPTY_SEQUENTIAL_PREVIEW_INSET_Y * 2 + previewSlotHeight,
-      );
-      previewSlotTop =
-        CONTAINER_LAYOUT.headerHeight +
-        Math.max(
-          EMPTY_SEQUENTIAL_PREVIEW_INSET_Y,
-          Math.round(
-            (requiredTargetHeight - CONTAINER_LAYOUT.headerHeight - previewSlotHeight) / 2,
-          ),
-        );
-    }
-
-    const maxOccupiedBottom = Math.max(
-      maxShiftedChildBottom,
-      previewSlotTop + previewSlotHeight,
+    const previewSlotBottom =
+      targetChildren.length > 0 ? previewTop + previewHeight : 0;
+    const requiredTargetHeight = Math.max(
+      targetDimensions.height,
+      Math.max(maxShiftedChildBottom, previewSlotBottom) +
+        CONTAINER_LAYOUT.bottomPadding,
     );
-    requiredTargetHeight = Math.max(
-      requiredTargetHeight,
-      Math.ceil(maxOccupiedBottom + CONTAINER_LAYOUT.bottomPadding),
-    );
-
-    if (useEmptySequentialPreview) {
-      previewSlotTop =
-        CONTAINER_LAYOUT.headerHeight +
-        Math.max(
-          EMPTY_SEQUENTIAL_PREVIEW_INSET_Y,
-          Math.round(
-            (requiredTargetHeight - CONTAINER_LAYOUT.headerHeight - previewSlotHeight) / 2,
-          ),
-        );
-    }
 
     if (
       targetContainerNode.moduleType === 'Sequential' &&
@@ -422,18 +351,8 @@ function CanvasInner() {
       );
     }
 
-    previewSlot = {
-      containerId: containerDropTarget.containerId,
-      top: previewSlotTop,
-      height: previewSlotHeight,
-      width: previewWidth,
-      left: previewLeft,
-      mode: useEmptySequentialPreview ? 'empty-centered' : 'slot',
-    };
-
     return {
       previewMotionByNodeId,
-      previewSlot,
       previewContainerHeightByNodeId,
     };
   }, [containerDropTarget, dragPreviewType, draggingNodeId, graph]);
@@ -482,30 +401,6 @@ function CanvasInner() {
             ...node.data,
             isDropTarget:
               node.type === 'containerNode' && containerDropTarget?.containerId === node.id,
-            dropPreviewIndex:
-              node.type === 'containerNode' && containerDropTarget?.containerId === node.id
-                ? containerDropTarget.insertAt
-                : null,
-            dropPreviewTop:
-              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-                ? previewState.previewSlot.top
-                : null,
-            dropPreviewHeight:
-              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-                ? previewState.previewSlot.height
-                : null,
-            dropPreviewWidth:
-              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-                ? previewState.previewSlot.width
-                : null,
-            dropPreviewLeft:
-              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-                ? previewState.previewSlot.left
-                : null,
-            dropPreviewMode:
-              node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
-                ? previewState.previewSlot.mode
-                : undefined,
             pulseContainer: recentContainerInsertion?.containerId === node.id,
             pulseChild: recentContainerInsertion?.childId === node.id,
             previewShifted: previewMotion?.shifted,
@@ -522,7 +417,6 @@ function CanvasInner() {
       nodes,
       previewState.previewContainerHeightByNodeId,
       previewState.previewMotionByNodeId,
-      previewState.previewSlot,
       recentContainerInsertion,
     ],
   );
@@ -922,7 +816,7 @@ function CanvasInner() {
 
       <ReactFlow
         nodes={displayedNodes}
-        edges={displayedEdges}
+        edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

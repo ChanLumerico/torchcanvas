@@ -4,7 +4,6 @@ import clsx from 'clsx';
 
 import {
   getInternalStates,
-  getLayerColor,
   getLayerDefinition,
   getLayerDocUrl,
   type InternalStateDescriptor,
@@ -13,6 +12,7 @@ import {
 } from '../../domain/layers';
 import { sanitizePythonIdentifier } from '../../compiler/pythonSerializer';
 import { BoundaryResolver } from '../../domain/graph/BoundaryResolver';
+import { getDisplayedAccentColor } from '../../domain/graph/reactFlowAdapter';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 
 function EdgePanel({ edgeId }: { edgeId: string }) {
@@ -29,8 +29,12 @@ function EdgePanel({ edgeId }: { edgeId: string }) {
   const targetNode = nodes.find((node) => node.id === edge.target);
   const sourceType = sourceNode?.data.type;
   const targetType = targetNode?.data.type;
-  const sourceColor = sourceType ? getLayerColor(sourceType) : '#6b7280';
-  const targetColor = targetType ? getLayerColor(targetType) : '#6b7280';
+  const sourceColor = sourceType
+    ? getDisplayedAccentColor(sourceType, sourceNode?.data.connected)
+    : '#6b7280';
+  const targetColor = targetType
+    ? getDisplayedAccentColor(targetType, targetNode?.data.connected)
+    : '#6b7280';
   const edgeColor = typeof edge.style?.stroke === 'string' ? edge.style.stroke : sourceColor;
 
   return (

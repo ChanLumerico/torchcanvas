@@ -144,6 +144,14 @@ async function getStrokeColor(locator: Locator): Promise<string> {
   return locator.evaluate((element) => window.getComputedStyle(element).stroke);
 }
 
+async function getTextColor(locator: Locator): Promise<string> {
+  return locator.evaluate((element) => window.getComputedStyle(element).color);
+}
+
+async function getBackgroundColor(locator: Locator): Promise<string> {
+  return locator.evaluate((element) => window.getComputedStyle(element).backgroundColor);
+}
+
 async function openOmnibar(page: Page, position: DropPosition): Promise<Locator> {
   const canvas = await getCanvas(page);
   const box = await canvas.boundingBox();
@@ -251,7 +259,7 @@ test.describe('TorchCanvas E2E', () => {
     await openWorkspace(page);
 
     await dragLayerToCanvas(page, 'Sequential', { xRatio: 0.35, yRatio: 0.35 });
-    const firstSequential = page.locator('[data-container-node="Sequential"]').first();
+    const firstSequential = await getNode(page, 'Sequential');
     await dragLayerIntoNode(page, 'Linear', firstSequential, 0.58);
     await dragLayerIntoNode(page, 'ReLU', firstSequential, 0.72);
 
@@ -261,7 +269,7 @@ test.describe('TorchCanvas E2E', () => {
     await expect(page.locator('[data-container-node="Sequential"]')).toHaveCount(2);
     await expect(page.locator('[data-container-node="Sequential"][data-child-count="2"]')).toHaveCount(1);
     await expect(page.locator('.react-flow__node').filter({ hasText: 'Conv2d' })).toHaveCount(1);
-    await expect(page.locator('.react-flow__edge:not(.sequential-derived-edge)')).toHaveCount(0);
+    await expect(page.locator('.react-flow__edge')).toHaveCount(0);
   });
 
   test('explicit connections to sequential containers stay valid and update generated code', async ({ page }) => {
@@ -284,7 +292,8 @@ test.describe('TorchCanvas E2E', () => {
     await expect(page.locator('[data-container-node="Sequential"][data-connected="true"]')).toBeVisible();
     await expect(page.locator('footer')).not.toContainText('TorchCanvas graph validation failed.');
     await expect(page.locator('footer')).toContainText('self.sequential_1 = nn.Sequential(');
-    await expect(page.locator('.react-flow__edge.sequential-derived-edge')).toHaveCount(1);
+    await expect(page.locator('.react-flow__edge')).toHaveCount(1);
+    await expect(page.locator('.react-flow__edge.sequential-derived-edge')).toHaveCount(0);
   });
 
   test('connected sequential source edges use the active sequential accent', async ({ page }) => {
@@ -304,12 +313,39 @@ test.describe('TorchCanvas E2E', () => {
       '.react-flow__handle-left',
     );
 
-    const explicitEdgePath = page.locator('.react-flow__edge:not(.sequential-derived-edge) .react-flow__edge-path').first();
-    const derivedEdgePath = page.locator('.react-flow__edge.sequential-derived-edge .react-flow__edge-path').first();
+    const explicitEdgePath = page.locator('.react-flow__edge .react-flow__edge-path').first();
     await expect(explicitEdgePath).toBeVisible();
-    await expect(derivedEdgePath).toBeVisible();
     expect(await getStrokeColor(explicitEdgePath)).toBe('rgb(148, 163, 184)');
-    expect(await getStrokeColor(derivedEdgePath)).toBe('rgb(148, 163, 184)');
+    await expect(page.locator('.react-flow__edge.sequential-derived-edge')).toHaveCount(0);
+  });
+
+  test('edge inspector uses the active sequential accent for the sequential side', async ({ page }) => {
+    await openWorkspace(page);
+
+    await dragLayerToCanvas(page, 'Sequential', { xRatio: 0.42, yRatio: 0.32 });
+    const sequential = page.locator('[data-container-node="Sequential"]').first();
+    await dragLayerIntoNode(page, 'ReLU', sequential, 0.58);
+    await dragLayerIntoNode(page, 'Dropout', sequential, 0.74);
+    await dragLayerToCanvas(page, 'Linear', { xRatio: 0.74, yRatio: 0.32 });
+
+    await connectNodes(
+      page,
+      'Sequential',
+      'Linear',
+      '.react-flow__handle-right',
+      '.react-flow__handle-left',
+    );
+
+    await page.locator('.react-flow__edge .react-flow__edge-interaction').first().dispatchEvent('click');
+
+    const inspector = page.locator('aside').last();
+    await expect(inspector).toContainText('Edge');
+
+    const sourceLabel = inspector.getByText('Sequential').first();
+    const sourceSwatch = sourceLabel.locator('xpath=preceding-sibling::div[1]');
+
+    expect(await getBackgroundColor(sourceSwatch)).toBe('rgb(148, 163, 184)');
+    expect(await getTextColor(sourceLabel)).toBe('rgb(148, 163, 184)');
   });
 
   test('sequential preview state clears when a sidebar drag is cancelled', async ({ page }) => {
@@ -326,54 +362,17 @@ test.describe('TorchCanvas E2E', () => {
     await expect(page.locator('[data-preview-shifted="true"]')).toHaveCount(0);
   });
 
-  test('empty sequential preview is centered within the container body', async ({ page }) => {
+  test('empty sequential preview uses the active target state without rendering a placeholder slot', async ({ page }) => {
     await openWorkspace(page);
 
     await dragLayerToCanvas(page, 'Sequential', { xRatio: 0.56, yRatio: 0.32 });
     const sequential = page.locator('[data-container-node="Sequential"]').first();
     const { source, dataTransfer } = await previewLayerOverNode(page, 'Conv2d', sequential, 0.58);
 
-    await expect(sequential).toHaveAttribute('data-drop-preview-mode', 'empty-centered');
-    const previewSlot = sequential.locator('[data-container-drop-slot="empty-centered"]');
-    await expect(previewSlot).toBeVisible();
-
-    const layoutMetrics = await previewSlot.evaluate((slot) => {
-      const root = slot.closest('[data-container-node]');
-      if (!(slot instanceof HTMLElement) || !(root instanceof HTMLElement)) {
-        return null;
-      }
-
-      const containerWidth = root.offsetWidth;
-      const containerHeight = root.offsetHeight;
-      const bodyTop = 32;
-      const bodyHeight = containerHeight - bodyTop;
-      const slotLeft = slot.offsetLeft;
-      const slotTop = slot.offsetTop;
-      const slotWidth = slot.offsetWidth;
-      const slotHeight = slot.offsetHeight;
-
-      return {
-        slotLeft,
-        slotTop,
-        slotWidth,
-        slotHeight,
-        leftInset: slotLeft,
-        rightInset: containerWidth - slotLeft - slotWidth,
-        topInset: slotTop - bodyTop,
-        bottomInset: containerHeight - slotTop - slotHeight,
-        bodyCenterY: bodyTop + bodyHeight / 2,
-        slotCenterY: slotTop + slotHeight / 2,
-      };
-    });
-
-    if (!layoutMetrics) {
-      throw new Error('Could not resolve the empty sequential preview layout metrics.');
-    }
-
-    expect(Math.abs(layoutMetrics.leftInset - layoutMetrics.rightInset)).toBeLessThanOrEqual(2);
-    expect(Math.abs(layoutMetrics.slotCenterY - layoutMetrics.bodyCenterY)).toBeLessThanOrEqual(2);
-    expect(layoutMetrics.topInset).toBeGreaterThan(0);
-    expect(layoutMetrics.bottomInset).toBeGreaterThan(0);
+    await expect(sequential).toHaveAttribute('data-drop-target', 'true');
+    await expect(sequential).toHaveAttribute('data-preview-expanded', 'false');
+    await expect(sequential.locator('[data-container-drop-slot]')).toHaveCount(0);
+    await expect(page.locator('[data-preview-shifted="true"]')).toHaveCount(0);
 
     await source.dispatchEvent('dragend', { dataTransfer });
   });
@@ -393,6 +392,7 @@ test.describe('TorchCanvas E2E', () => {
 
     await expect(sequential).toHaveAttribute('data-preview-expanded', 'true');
     await expect(page.locator('[data-preview-shifted="true"]')).toHaveCount(1);
+    await expect(sequential.locator('[data-container-drop-slot]')).toHaveCount(0);
     await page.waitForTimeout(200);
     expect(await getElementHeight(sequential)).toBeGreaterThan(baseHeight);
 
@@ -415,6 +415,7 @@ test.describe('TorchCanvas E2E', () => {
 
     await expect(page.locator('[data-preview-shifted="true"]')).toHaveCount(1);
     await expect(sequential).toHaveAttribute('data-preview-expanded', 'false');
+    await expect(sequential.locator('[data-container-drop-slot]')).toHaveCount(0);
     expect(await getElementHeight(sequential)).toBe(baseHeight);
 
     await source.dispatchEvent('dragend', { dataTransfer });

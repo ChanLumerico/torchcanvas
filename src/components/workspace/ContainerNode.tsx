@@ -6,8 +6,8 @@ import clsx from 'clsx';
 
 import { getLayerColor } from '../../domain/layers';
 import { ACTIVE_CONTAINER_ACCENT, type ModuleData } from '../../domain/graph/reactFlowAdapter';
-import { CONTAINER_LAYOUT, getNodeBehavior } from '../../domain/nodes';
-import { HiddenSequentialHandle, VisibleNodeHandle } from './NodeHandle';
+import { CONTAINER_LAYOUT } from '../../domain/nodes';
+import { VisibleNodeHandle } from './NodeHandle';
 
 function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
   const {
@@ -17,11 +17,6 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
     hideHandles,
     containerChildCount = 0,
     isDropTarget,
-    dropPreviewTop,
-    dropPreviewHeight,
-    dropPreviewWidth,
-    dropPreviewLeft,
-    dropPreviewMode,
     pulseContainer,
     previewShifted,
     previewGhost,
@@ -30,21 +25,6 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
   } = data;
   const color = getLayerColor(type);
   const isActive = Boolean(connected || isDropTarget);
-  const containerBehavior = getNodeBehavior(type);
-  const insertionGuideTop = typeof dropPreviewTop === 'number' ? dropPreviewTop : null;
-  const previewWidth =
-    typeof dropPreviewWidth === 'number'
-      ? dropPreviewWidth
-      : containerBehavior.isContainer()
-        ? containerBehavior.getChildWidth()
-        : CONTAINER_LAYOUT.width - CONTAINER_LAYOUT.paddingX * 2;
-  const previewLeft =
-    typeof dropPreviewLeft === 'number'
-      ? dropPreviewLeft
-      : containerBehavior.isContainer()
-        ? containerBehavior.getChildLeft()
-        : CONTAINER_LAYOUT.paddingX;
-  const previewHeight = typeof dropPreviewHeight === 'number' ? dropPreviewHeight : CONTAINER_LAYOUT.childHeight;
   const activeColor = isActive ? ACTIVE_CONTAINER_ACCENT : color;
   const handleColor = isActive ? activeColor : color;
 
@@ -56,7 +36,6 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
       data-child-count={String(containerChildCount)}
       data-preview-shifted={previewShifted ? 'true' : 'false'}
       data-preview-ghost={previewGhost ? 'true' : 'false'}
-      data-drop-preview-mode={dropPreviewMode ?? 'none'}
       data-drag-source-hidden={dragSourceHidden ? 'true' : 'false'}
       data-preview-expanded={previewExpanded ? 'true' : 'false'}
       className={clsx(
@@ -117,42 +96,9 @@ function ContainerNode({ data, selected }: NodeProps<ModuleData>) {
             Drop layers here
           </div>
         )}
-
-        {typeof insertionGuideTop === 'number' && (
-          <>
-            <div
-              className="absolute h-[3px] rounded-full transition-all duration-200 container-slot-line"
-              style={{
-                top: insertionGuideTop,
-                left: previewLeft,
-                width: previewWidth,
-                background: `linear-gradient(90deg, transparent 0%, ${color}AA 18%, ${color} 50%, ${color}AA 82%, transparent 100%)`,
-                boxShadow: `0 0 18px ${color}44`,
-              }}
-            />
-            <div
-              data-container-drop-slot={dropPreviewMode ?? 'slot'}
-              className="absolute rounded-[14px] transition-all duration-200 container-drop-slot"
-              style={{
-                top: insertionGuideTop,
-                left: previewLeft,
-                width: previewWidth,
-                height: previewHeight,
-                border: `1px solid ${color}32`,
-                background: `linear-gradient(180deg, ${color}24 0%, ${color}12 55%, ${color}06 100%)`,
-                boxShadow: `inset 0 0 0 1px ${color}18, 0 12px 28px -18px ${color}90`,
-              }}
-            />
-          </>
-        )}
       </div>
 
-      {hideHandles ? (
-        <>
-          <HiddenSequentialHandle id="sequential-top" type="target" position={Position.Top} />
-          <HiddenSequentialHandle id="sequential-bottom" type="source" position={Position.Bottom} />
-        </>
-      ) : (
+      {hideHandles ? null : (
         <>
           <VisibleNodeHandle type="target" position={Position.Left} color={handleColor} />
           <VisibleNodeHandle type="source" position={Position.Right} color={handleColor} />

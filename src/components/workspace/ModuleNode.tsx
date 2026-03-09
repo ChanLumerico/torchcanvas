@@ -8,7 +8,7 @@ import { getLayerColor, type ModuleType } from '../../domain/layers';
 import type { ModuleData } from '../../domain/graph/reactFlowAdapter';
 import { CONTAINER_LAYOUT } from '../../domain/nodes';
 import { useWorkspaceStore } from '../../store/workspaceStore';
-import { HiddenSequentialHandle, VisibleNodeHandle } from './NodeHandle';
+import { VisibleNodeHandle } from './NodeHandle';
 
 function getNodeColor(type: ModuleType, connected: boolean | undefined): string {
   if (!connected) {
@@ -126,12 +126,7 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
           {data.attributeName}
         </span>
 
-        {hideHandles ? (
-          <>
-            <HiddenSequentialHandle id="sequential-top" type="target" position={Position.Top} />
-            <HiddenSequentialHandle id="sequential-bottom" type="source" position={Position.Bottom} />
-          </>
-        ) : (
+        {hideHandles ? null : (
           <>
             <VisibleNodeHandle type="target" position={Position.Left} color={accentColor} />
             <VisibleNodeHandle type="source" position={Position.Right} color={accentColor} />

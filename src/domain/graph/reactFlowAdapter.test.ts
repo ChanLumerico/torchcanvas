@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACTIVE_CONTAINER_ACCENT,
-  graphToDerivedSequentialEdges,
+  getDisplayedAccentColor,
   graphToReactFlowEdges,
 } from './reactFlowAdapter';
 import type { GraphLayoutState, GraphModel, GraphNodePresentationMeta } from './types';
@@ -24,53 +24,10 @@ function createMetaByNodeId(
 }
 
 describe('reactFlowAdapter', () => {
-  it('renders sequential derived edges as straight vertical read-only edges using the container color', () => {
-    const graph: GraphModel = {
-      modelName: 'AdapterGraph',
-      inputsByNodeId: {},
-      nodes: [
-        { id: 'seq', moduleType: 'Sequential', attributeName: 'encoder', params: {} },
-        {
-          id: 'conv',
-          moduleType: 'Conv2d',
-          attributeName: 'conv2d_1',
-          params: { in_channels: 3, out_channels: 64, kernel_size: 3, stride: 1, padding: 1 },
-          containerId: 'seq',
-          containerOrder: 0,
-        },
-        {
-          id: 'relu',
-          moduleType: 'ReLU',
-          attributeName: 'relu_1',
-          params: { inplace: true },
-          containerId: 'seq',
-          containerOrder: 1,
-        },
-      ],
-      edges: [],
-    };
-
-    expect(graphToDerivedSequentialEdges(graph)).toEqual([
-      expect.objectContaining({
-        source: 'conv',
-        target: 'relu',
-        sourceHandle: 'sequential-bottom',
-        targetHandle: 'sequential-top',
-        type: 'straight',
-        className: 'sequential-derived-edge',
-        selectable: false,
-        focusable: false,
-        deletable: false,
-        data: {
-          derived: true,
-          readOnly: true,
-        },
-        style: expect.objectContaining({
-          stroke: '#334155',
-          strokeWidth: 2.25,
-        }),
-      }),
-    ]);
+  it('uses the active container accent for connected containers', () => {
+    expect(getDisplayedAccentColor('Sequential', true)).toBe(ACTIVE_CONTAINER_ACCENT);
+    expect(getDisplayedAccentColor('Sequential', false)).toBe('#334155');
+    expect(getDisplayedAccentColor('Linear', true)).toBe('#EF4444');
   });
 
   it('uses the active container accent for connected sequential edges', () => {
@@ -127,15 +84,6 @@ describe('reactFlowAdapter', () => {
       expect.objectContaining({
         stroke: ACTIVE_CONTAINER_ACCENT,
         strokeWidth: 2,
-      }),
-    );
-
-    expect(
-      graphToDerivedSequentialEdges(graph, metaByNodeId)[0]?.style,
-    ).toEqual(
-      expect.objectContaining({
-        stroke: ACTIVE_CONTAINER_ACCENT,
-        strokeWidth: 2.25,
       }),
     );
   });

@@ -14,7 +14,6 @@ import type {
 import {
   buildContainerLayoutIndex,
   getContainerChildren,
-  getSequentialDerivedEdgePairs,
   isSequentialChild,
 } from './utils';
 
@@ -32,12 +31,6 @@ export interface ModuleData {
   hideHandles?: boolean;
   containerChildCount?: number;
   isDropTarget?: boolean;
-  dropPreviewIndex?: number | null;
-  dropPreviewTop?: number | null;
-  dropPreviewHeight?: number | null;
-  dropPreviewWidth?: number | null;
-  dropPreviewLeft?: number | null;
-  dropPreviewMode?: 'slot' | 'empty-centered';
   pulseContainer?: boolean;
   pulseChild?: boolean;
   previewShifted?: boolean;
@@ -91,15 +84,15 @@ function createEdgeStyle(color: string): CSSProperties {
   };
 }
 
-function getDisplayedNodeAccentColor(
-  node: Pick<GraphNode, 'moduleType'>,
-  meta?: GraphNodePresentationMeta,
+export function getDisplayedAccentColor(
+  moduleType: ModuleType,
+  connected?: boolean,
 ): string {
-  if (isContainerModule(node.moduleType) && meta?.connected) {
+  if (isContainerModule(moduleType) && connected) {
     return ACTIVE_CONTAINER_ACCENT;
   }
 
-  return getLayerColor(node.moduleType);
+  return getLayerColor(moduleType);
 }
 
 export function createGraphNodeFromReactFlowNode(node: NetworkNode): {
@@ -215,46 +208,9 @@ export function graphToReactFlowEdges(
       },
       style: createEdgeStyle(
         sourceNode
-          ? getDisplayedNodeAccentColor(sourceNode, metaByNodeId?.[sourceNode.id])
+          ? getDisplayedAccentColor(sourceNode.moduleType, metaByNodeId?.[sourceNode.id]?.connected)
           : DEFAULT_EDGE_COLOR,
       ),
-    };
-  });
-}
-
-export function graphToDerivedSequentialEdges(
-  graph: GraphModel,
-  metaByNodeId?: Record<string, GraphNodePresentationMeta>,
-): Edge[] {
-  const nodeMap = new Map(graph.nodes.map((node) => [node.id, node] as const));
-
-  return getSequentialDerivedEdgePairs(graph).map((edge) => {
-    const containerNode = nodeMap.get(edge.containerId);
-    const containerColor = containerNode
-      ? getDisplayedNodeAccentColor(containerNode, metaByNodeId?.[containerNode.id])
-      : DEFAULT_EDGE_COLOR;
-
-    return {
-      id: `derived:${edge.containerId}:${edge.sourceId}:${edge.targetId}`,
-      source: edge.sourceId,
-      target: edge.targetId,
-      sourceHandle: 'sequential-bottom',
-      targetHandle: 'sequential-top',
-      type: 'straight',
-      className: 'sequential-derived-edge',
-      animated: false,
-      selectable: false,
-      focusable: false,
-      deletable: false,
-      interactionWidth: 0,
-      data: {
-        derived: true,
-        readOnly: true,
-      },
-      style: {
-        stroke: containerColor,
-        strokeWidth: 2.25,
-      },
     };
   });
 }
