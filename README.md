@@ -1,5 +1,9 @@
 # 🔥 TorchCanvas
 
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/97f9a2b4-05c1-41e2-8aba-4e7f3f3794c1" width="80%">
+</div>
+
 TorchCanvas is a browser-based visual model builder for PyTorch.
 Users drag `torch.nn` modules onto a canvas, connect them as a graph, organize them into container nodes such as `Sequential`, and get generated PyTorch code in real time.
 
