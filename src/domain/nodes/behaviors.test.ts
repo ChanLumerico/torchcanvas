@@ -31,12 +31,12 @@ describe('node behaviors', () => {
     expect(moduleDict.getConnectionPolicy().canSourceConnections).toBe(false);
   });
 
-  it('does not allow special endpoint nodes to be nested inside containers', () => {
+  it('allows callable containers to be nested and keeps non-callable containers blocked', () => {
     const sequential = getNodeBehavior('Sequential');
-    const input = getNodeBehavior('Input');
-    const output = getNodeBehavior('Output');
+    const nestedSequential = getNodeBehavior('Sequential');
+    const moduleDict = getNodeBehavior('ModuleDict');
 
-    expect(input.canBeNestedIn(sequential)).toBe(false);
-    expect(output.canBeNestedIn(sequential)).toBe(false);
+    expect(nestedSequential.canBeNestedIn(sequential)).toBe(true);
+    expect(moduleDict.canBeNestedIn(sequential)).toBe(false);
   });
 });

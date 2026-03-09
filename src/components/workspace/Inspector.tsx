@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowRight, GitBranch, Info, Settings, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -12,6 +12,7 @@ import {
   type ParamSpec,
 } from '../../domain/layers';
 import { sanitizePythonIdentifier } from '../../compiler/pythonSerializer';
+import { BoundaryResolver } from '../../domain/graph/BoundaryResolver';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 
 function EdgePanel({ edgeId }: { edgeId: string }) {
@@ -117,9 +118,14 @@ export default function Inspector() {
   const graph = useWorkspaceStore((state) => state.graph);
   const updateNodeParams = useWorkspaceStore((state) => state.updateNodeParams);
   const updateNodeAttributeName = useWorkspaceStore((state) => state.updateNodeAttributeName);
+  const updateModelInput = useWorkspaceStore((state) => state.updateModelInput);
   const modelName = useWorkspaceStore((state) => state.modelName);
   const setModelName = useWorkspaceStore((state) => state.setModelName);
   const deleteNodeById = useWorkspaceStore((state) => state.deleteNodeById);
+  const rootNodes = useMemo(
+    () => new BoundaryResolver(graph).getExecutableBoundaries().roots,
+    [graph],
+  );
 
   if (selectedEdgeId) {
     return <EdgePanel edgeId={selectedEdgeId} />;
@@ -146,6 +152,77 @@ export default function Inspector() {
             <p className="text-[10px] text-textMuted/60 mt-1">
               This will be used as the Python class name.
             </p>
+          </div>
+          <div className="mb-6">
+            <label className="text-[10px] font-bold uppercase tracking-wider text-textMuted/60 mb-3 block">
+              Model Inputs
+            </label>
+            {rootNodes.length === 0 ? (
+              <div className="rounded-xl border border-border/40 bg-black/20 px-3 py-3 text-[10px] text-textMuted/60 leading-relaxed">
+                Add a top-level module to define the model entrypoint. Roots with no incoming
+                connections become `forward(...)` arguments automatically.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {rootNodes.map((node, index) => {
+                  const binding = graph.inputsByNodeId[node.id] ?? {
+                    argumentName: sanitizePythonIdentifier(node.attributeName, `input_${index + 1}`),
+                    shape: '',
+                  };
+
+                  return (
+                    <div
+                      key={node.id}
+                      className="rounded-xl border border-border/40 bg-black/20 px-3 py-3 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold text-white/90 truncate">
+                            {node.moduleType}
+                          </div>
+                          <div className="text-[10px] font-mono text-textMuted/55 truncate">
+                            {node.attributeName}
+                          </div>
+                        </div>
+                        <span className="text-[9px] uppercase tracking-wider text-textMuted/40">
+                          Root {index + 1}
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="space-y-1">
+                          <label className="text-[9px] uppercase tracking-wider text-textMuted/50">
+                            Argument Name
+                          </label>
+                          <input
+                            type="text"
+                            value={binding.argumentName}
+                            onChange={(event) =>
+                              updateModelInput(node.id, { argumentName: event.target.value })
+                            }
+                            className="bg-black/40 border border-border/80 rounded block w-full px-2.5 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-primary/50 transition-colors"
+                            placeholder={`input_${index + 1}`}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[9px] uppercase tracking-wider text-textMuted/50">
+                            Input Shape
+                          </label>
+                          <input
+                            type="text"
+                            value={binding.shape}
+                            onChange={(event) =>
+                              updateModelInput(node.id, { shape: event.target.value })
+                            }
+                            className="bg-black/40 border border-border/80 rounded block w-full px-2.5 py-1.5 text-[11px] font-mono text-white focus:outline-none focus:border-primary/50 transition-colors"
+                            placeholder="[B, 3, 224, 224]"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="flex-1 flex flex-col items-center justify-center text-textMuted/50 text-[10px] text-center px-4">
             <div className="w-12 h-12 rounded-full border border-dashed border-border/50 mb-3 flex items-center justify-center">

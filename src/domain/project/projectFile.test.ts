@@ -32,6 +32,19 @@ function createNode(
   };
 }
 
+function createGraph(
+  nodes: GraphModel['nodes'],
+  edges: GraphModel['edges'],
+  inputsByNodeId: GraphModel['inputsByNodeId'] = {},
+): GraphModel {
+  return {
+    modelName: 'VisionModel',
+    inputsByNodeId,
+    nodes,
+    edges,
+  };
+}
+
 function createLayout(
   positionsById: Record<string, GraphPosition>,
   dimensionsById: GraphLayoutState['dimensionsById'] = {},
@@ -43,24 +56,21 @@ function createLayout(
 }
 
 describe('projectFile', () => {
-  it('round-trips a valid project file through serialize and parse', () => {
-    const graph: GraphModel = {
-      modelName: 'VisionModel',
-      nodes: [
-        createNode('input', 'Input', 'image'),
+  it('round-trips a valid v2 project file through serialize and parse', () => {
+    const graph = createGraph(
+      [
         createNode('conv', 'Conv2d', 'conv_1'),
-        createNode('output', 'Output', 'output'),
+        createNode('relu', 'ReLU', 'relu_1'),
       ],
-      edges: [
-        { id: 'edge-1', sourceId: 'input', targetId: 'conv' },
-        { id: 'edge-2', sourceId: 'conv', targetId: 'output' },
-      ],
-    };
+      [{ id: 'edge-1', sourceId: 'conv', targetId: 'relu' }],
+      {
+        conv: { argumentName: 'image', shape: '[B, 3, 224, 224]' },
+      },
+    );
     const layout = createLayout(
       {
-        input: { x: 80, y: 160 },
-        conv: { x: 360, y: 160 },
-        output: { x: 640, y: 160 },
+        conv: { x: 80, y: 160 },
+        relu: { x: 360, y: 160 },
       },
       {
         conv: { width: 144, height: 180 },
@@ -83,6 +93,7 @@ describe('projectFile', () => {
       savedAt: new Date().toISOString(),
       graph: {
         modelName: 'GeneratedModel',
+        inputsByNodeId: {},
         nodes: [],
         edges: [],
       },
@@ -96,22 +107,48 @@ describe('projectFile', () => {
     expect(result.errors).toContain('Unsupported project schema version: 999.');
   });
 
-  it('rejects unknown module types and duplicate node ids', () => {
+  it('rejects projects that still use removed Input/Output nodes', () => {
     const project = {
       app: 'torchcanvas',
       schemaVersion: 1,
       savedAt: new Date().toISOString(),
       graph: {
+        modelName: 'LegacyModel',
+        nodes: [
+          {
+            id: 'input',
+            moduleType: 'Input',
+            attributeName: 'image',
+            params: { shape: '[B, 3, 224, 224]' },
+          },
+        ],
+        edges: [],
+      },
+      layout: {
+        positionsById: {
+          input: { x: 0, y: 0 },
+        },
+      },
+    };
+
+    const result = validateProjectFile(project);
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toContain(
+      'This project uses removed Input/Output nodes and is not supported in TorchCanvas v2.',
+    );
+  });
+
+  it('rejects unknown module types and duplicate node ids', () => {
+    const project = {
+      app: 'torchcanvas',
+      schemaVersion: 2,
+      savedAt: new Date().toISOString(),
+      graph: {
         modelName: 'GeneratedModel',
+        inputsByNodeId: {},
         nodes: [
           {
             id: 'node-1',
-            moduleType: 'Input',
-            attributeName: 'input_1',
-            params: getDefaultParams('Input'),
-          },
-          {
-            id: 'node-2',
             moduleType: 'UnknownLayer',
             attributeName: 'unknown_1',
             params: {},
@@ -128,7 +165,6 @@ describe('projectFile', () => {
       layout: {
         positionsById: {
           'node-1': { x: 0, y: 0 },
-          'node-2': { x: 200, y: 0 },
         },
       },
     };
@@ -137,37 +173,6 @@ describe('projectFile', () => {
     expect(result.isValid).toBe(false);
     expect(result.errors).toContain('Duplicate node id: node-1.');
     expect(result.errors).toContain(
-      'graph.nodes[1].moduleType is not a supported TorchCanvas layer.',
-    );
-  });
-
-  it('rejects removed Concat nodes on import', () => {
-    const project = {
-      app: 'torchcanvas',
-      schemaVersion: 1,
-      savedAt: new Date().toISOString(),
-      graph: {
-        modelName: 'OldConcatProject',
-        nodes: [
-          {
-            id: 'concat',
-            moduleType: 'Concat',
-            attributeName: 'concat_1',
-            params: { dim: 1 },
-          },
-        ],
-        edges: [],
-      },
-      layout: {
-        positionsById: {
-          concat: { x: 200, y: 120 },
-        },
-      },
-    };
-
-    const result = validateProjectFile(project);
-    expect(result.isValid).toBe(false);
-    expect(result.errors).toContain(
       'graph.nodes[0].moduleType is not a supported TorchCanvas layer.',
     );
   });
@@ -175,10 +180,11 @@ describe('projectFile', () => {
   it('rejects dangling edges and invalid container references', () => {
     const project = {
       app: 'torchcanvas',
-      schemaVersion: 1,
+      schemaVersion: 2,
       savedAt: new Date().toISOString(),
       graph: {
         modelName: 'GeneratedModel',
+        inputsByNodeId: {},
         nodes: [
           {
             id: 'relu',
@@ -211,13 +217,13 @@ describe('projectFile', () => {
   });
 
   it('accepts structurally valid projects even when the graph is compilation-invalid', () => {
-    const graph: GraphModel = {
-      modelName: 'DraftModel',
-      nodes: [createNode('conv', 'Conv2d', 'conv_1')],
-      edges: [],
-    };
+    const graph = createGraph(
+      [createNode('dict', 'ModuleDict', 'blocks')],
+      [],
+      {},
+    );
     const layout = createLayout({
-      conv: { x: 240, y: 180 },
+      dict: { x: 240, y: 180 },
     });
 
     const result = validateProjectFile(serializeProject(graph, layout));
@@ -229,10 +235,13 @@ describe('projectFile', () => {
   it('normalizes missing containerOrder values on import', () => {
     const project = {
       app: 'torchcanvas',
-      schemaVersion: 1,
+      schemaVersion: 2,
       savedAt: new Date().toISOString(),
       graph: {
         modelName: 'SequentialProject',
+        inputsByNodeId: {
+          seq: { argumentName: 'image', shape: '[B, 32]' },
+        },
         nodes: [
           {
             id: 'seq',
@@ -241,17 +250,17 @@ describe('projectFile', () => {
             params: {},
           },
           {
-            id: 'linear',
-            moduleType: 'Linear',
-            attributeName: 'linear_1',
-            params: getDefaultParams('Linear'),
-            containerId: 'seq',
-          },
-          {
             id: 'relu',
             moduleType: 'ReLU',
             attributeName: 'relu_1',
             params: getDefaultParams('ReLU'),
+            containerId: 'seq',
+          },
+          {
+            id: 'linear',
+            moduleType: 'Linear',
+            attributeName: 'linear_1',
+            params: getDefaultParams('Linear'),
             containerId: 'seq',
           },
         ],
@@ -259,9 +268,9 @@ describe('projectFile', () => {
       },
       layout: {
         positionsById: {
-          seq: { x: 120, y: 80 },
-          linear: { x: 150, y: 140 },
-          relu: { x: 150, y: 220 },
+          seq: { x: 200, y: 120 },
+          relu: { x: 216, y: 180 },
+          linear: { x: 216, y: 240 },
         },
       },
     };
@@ -269,8 +278,34 @@ describe('projectFile', () => {
     const parsed = parseProjectFile(JSON.stringify(project));
     const childOrders = parsed.graph.nodes
       .filter((node) => node.containerId === 'seq')
-      .map((node) => node.containerOrder);
+      .map((node) => [node.id, node.containerOrder]);
 
-    expect(childOrders).toEqual([0, 1]);
+    expect(childOrders).toEqual([
+      ['relu', 0],
+      ['linear', 1],
+    ]);
+  });
+
+  it('rejects input bindings that reference unknown nodes', () => {
+    const project = {
+      app: 'torchcanvas',
+      schemaVersion: 2,
+      savedAt: new Date().toISOString(),
+      graph: {
+        modelName: 'BrokenBindings',
+        inputsByNodeId: {
+          missing: { argumentName: 'image', shape: '[B, 3, 224, 224]' },
+        },
+        nodes: [],
+        edges: [],
+      },
+      layout: {
+        positionsById: {},
+      },
+    };
+
+    const result = validateProjectFile(project);
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toContain('graph.inputsByNodeId.missing references an unknown node.');
   });
 });

@@ -539,6 +539,7 @@ export function cloneGraphLayoutState(layout: GraphLayoutState): GraphLayoutStat
 export function createEmptyGraphModel(modelName = 'GeneratedModel'): GraphModel {
   return {
     modelName,
+    inputsByNodeId: {},
     nodes: [],
     edges: [],
   };

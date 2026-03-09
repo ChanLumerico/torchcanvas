@@ -31,8 +31,15 @@ export interface ModuleData {
   containerChildCount?: number;
   isDropTarget?: boolean;
   dropPreviewIndex?: number | null;
+  dropPreviewTop?: number | null;
+  dropPreviewHeight?: number | null;
+  dropPreviewWidth?: number | null;
+  dropPreviewLeft?: number | null;
   pulseContainer?: boolean;
   pulseChild?: boolean;
+  previewShifted?: boolean;
+  previewGhost?: boolean;
+  dragSourceHidden?: boolean;
 }
 
 export type NetworkNode = ReactFlowNode<ModuleData>;

@@ -12,6 +12,7 @@ import {
 function createGraph(nodes: GraphModel['nodes']): GraphModel {
   return {
     modelName: 'GraphUtilsModel',
+    inputsByNodeId: {},
     nodes,
     edges: [],
   };

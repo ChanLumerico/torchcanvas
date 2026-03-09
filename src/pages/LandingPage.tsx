@@ -74,7 +74,7 @@ export default function LandingPage({ onEnterWorkspace }: { onEnterWorkspace: ()
               <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '24px 24px' }} />
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center gap-16">
                 <div className="w-32 h-16 bg-panel border-2 border-border/80 rounded-lg shadow-lg flex items-center justify-center relative">
-                  <span className="text-xs font-mono font-medium text-textMuted">Input</span>
+                  <span className="text-xs font-mono font-medium text-textMuted">Stem</span>
                   <div className="absolute right-[-64px] w-16 h-[2px] bg-primary/60" />
                 </div>
                 <div className="w-32 h-16 bg-orange-900/20 border-2 border-orange-500/50 rounded-lg shadow-[0_0_20px_-5px_rgba(238,76,44,0.3)] flex items-center justify-center relative">

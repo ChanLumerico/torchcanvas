@@ -6,9 +6,11 @@ import { validateGraphConnection, validateGraphForCompilation } from './validati
 function createGraph(
   nodes: GraphModel['nodes'],
   edges: GraphModel['edges'] = [],
+  inputsByNodeId: GraphModel['inputsByNodeId'] = {},
 ): GraphModel {
   return {
     modelName: 'ValidationGraph',
+    inputsByNodeId,
     nodes,
     edges,
   };
@@ -18,17 +20,22 @@ describe('validateGraphConnection', () => {
   it('rejects duplicate edges and self loops', () => {
     const graph = createGraph(
       [
-        { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 3, 224, 224]' } },
-        { id: 'conv', moduleType: 'Conv2d', attributeName: 'conv', params: { in_channels: 3, out_channels: 64, kernel_size: 3, stride: 1, padding: 1 } },
+        {
+          id: 'linear',
+          moduleType: 'Linear',
+          attributeName: 'linear',
+          params: { in_features: 32, out_features: 16 },
+        },
+        { id: 'relu', moduleType: 'ReLU', attributeName: 'relu', params: { inplace: true } },
       ],
-      [{ id: 'edge-1', sourceId: 'input', targetId: 'conv' }],
+      [{ id: 'edge-1', sourceId: 'linear', targetId: 'relu' }],
     );
 
-    expect(validateGraphConnection(graph, { source: 'input', target: 'conv' })).toEqual({
+    expect(validateGraphConnection(graph, { source: 'linear', target: 'relu' })).toEqual({
       isValid: false,
       code: 'duplicate-edge',
     });
-    expect(validateGraphConnection(graph, { source: 'conv', target: 'conv' })).toEqual({
+    expect(validateGraphConnection(graph, { source: 'relu', target: 'relu' })).toEqual({
       isValid: false,
       code: 'self-loop',
     });
@@ -37,26 +44,34 @@ describe('validateGraphConnection', () => {
   it('rejects connections that exceed target input arity', () => {
     const graph = createGraph(
       [
-        { id: 'image', moduleType: 'Input', attributeName: 'image', params: { shape: '[B, 128]' } },
-        { id: 'meta', moduleType: 'Input', attributeName: 'meta', params: { shape: '[B, 128]' } },
-        { id: 'extra', moduleType: 'Input', attributeName: 'extra', params: { shape: '[B, 128]' } },
+        {
+          id: 'image',
+          moduleType: 'Linear',
+          attributeName: 'image',
+          params: { in_features: 128, out_features: 64 },
+        },
+        {
+          id: 'meta',
+          moduleType: 'Linear',
+          attributeName: 'meta',
+          params: { in_features: 128, out_features: 64 },
+        },
+        {
+          id: 'extra',
+          moduleType: 'Linear',
+          attributeName: 'extra',
+          params: { in_features: 128, out_features: 64 },
+        },
         {
           id: 'fusion',
           moduleType: 'Bilinear',
           attributeName: 'fusion',
-          params: { in1_features: 128, in2_features: 128, out_features: 64 },
-        },
-        {
-          id: 'conv',
-          moduleType: 'Conv2d',
-          attributeName: 'conv',
-          params: { in_channels: 3, out_channels: 64, kernel_size: 3, stride: 1, padding: 1 },
+          params: { in1_features: 64, in2_features: 64, out_features: 32 },
         },
       ],
       [
         { id: 'edge-1', sourceId: 'image', targetId: 'fusion' },
         { id: 'edge-2', sourceId: 'meta', targetId: 'fusion' },
-        { id: 'edge-3', sourceId: 'image', targetId: 'conv' },
       ],
     );
 
@@ -64,58 +79,32 @@ describe('validateGraphConnection', () => {
       isValid: false,
       code: 'max-inputs',
     });
-    expect(validateGraphConnection(graph, { source: 'meta', target: 'conv' })).toEqual({
-      isValid: false,
-      code: 'max-inputs',
-    });
   });
 
-  it('rejects cycles and invalid input/output directions', () => {
+  it('rejects cycles and direct connections to non-callable containers', () => {
     const graph = createGraph(
       [
-        { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 64]' } },
         {
-          id: 'fusion',
-          moduleType: 'Bilinear',
-          attributeName: 'fusion',
-          params: { in1_features: 64, in2_features: 64, out_features: 32 },
+          id: 'linear',
+          moduleType: 'Linear',
+          attributeName: 'linear',
+          params: { in_features: 32, out_features: 16 },
         },
         { id: 'relu', moduleType: 'ReLU', attributeName: 'relu', params: { inplace: true } },
-        { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
+        { id: 'dict', moduleType: 'ModuleDict', attributeName: 'blocks', params: {} },
       ],
-      [
-        { id: 'edge-1', sourceId: 'input', targetId: 'fusion' },
-        { id: 'edge-2', sourceId: 'fusion', targetId: 'relu' },
-        { id: 'edge-3', sourceId: 'relu', targetId: 'output' },
-      ],
+      [{ id: 'edge-1', sourceId: 'linear', targetId: 'relu' }],
     );
 
-    expect(validateGraphConnection(graph, { source: 'relu', target: 'fusion' })).toEqual({
+    expect(validateGraphConnection(graph, { source: 'relu', target: 'linear' })).toEqual({
       isValid: false,
       code: 'cycle',
     });
-    expect(validateGraphConnection(graph, { source: 'output', target: 'relu' })).toEqual({
-      isValid: false,
-      code: 'output-source',
-    });
-    expect(validateGraphConnection(graph, { source: 'relu', target: 'input' })).toEqual({
-      isValid: false,
-      code: 'input-target',
-    });
-  });
-
-  it('rejects direct connections to non-callable containers', () => {
-    const graph = createGraph([
-      { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 64]' } },
-      { id: 'dict', moduleType: 'ModuleDict', attributeName: 'dict', params: {} },
-      { id: 'linear', moduleType: 'Linear', attributeName: 'linear', params: { in_features: 64, out_features: 32 } },
-    ]);
-
-    expect(validateGraphConnection(graph, { source: 'input', target: 'dict' })).toEqual({
+    expect(validateGraphConnection(graph, { source: 'linear', target: 'dict' })).toEqual({
       isValid: false,
       code: 'non-callable-container',
     });
-    expect(validateGraphConnection(graph, { source: 'dict', target: 'linear' })).toEqual({
+    expect(validateGraphConnection(graph, { source: 'dict', target: 'relu' })).toEqual({
       isValid: false,
       code: 'non-callable-container',
     });
@@ -123,7 +112,12 @@ describe('validateGraphConnection', () => {
 
   it('rejects direct connections to sequential child nodes', () => {
     const graph = createGraph([
-      { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 64]' } },
+      {
+        id: 'linear',
+        moduleType: 'Linear',
+        attributeName: 'linear',
+        params: { in_features: 32, out_features: 16 },
+      },
       { id: 'seq', moduleType: 'Sequential', attributeName: 'seq', params: {} },
       {
         id: 'relu',
@@ -135,7 +129,7 @@ describe('validateGraphConnection', () => {
       },
     ]);
 
-    expect(validateGraphConnection(graph, { source: 'input', target: 'relu' })).toEqual({
+    expect(validateGraphConnection(graph, { source: 'linear', target: 'relu' })).toEqual({
       isValid: false,
       code: 'container-child-endpoint',
     });
@@ -147,20 +141,45 @@ describe('validateGraphConnection', () => {
 });
 
 describe('validateGraphForCompilation', () => {
-  it('reports missing inputs and non-callable containers', () => {
+  it('accepts executable root modules without explicit input nodes', () => {
+    const graph = createGraph(
+      [
+        {
+          id: 'conv',
+          moduleType: 'Conv2d',
+          attributeName: 'conv',
+          params: { in_channels: 3, out_channels: 64, kernel_size: 3, stride: 1, padding: 1 },
+        },
+      ],
+      [],
+      {
+        conv: { argumentName: 'image', shape: '[B, 3, 224, 224]' },
+      },
+    );
+
+    expect(validateGraphForCompilation(graph)).toEqual([]);
+  });
+
+  it('reports invalid compilation states for non-callable containers', () => {
     const graph = createGraph(
       [
         { id: 'dict', moduleType: 'ModuleDict', attributeName: 'blocks', params: {} },
-        { id: 'linear', moduleType: 'Linear', attributeName: 'linear', params: { in_features: 64, out_features: 32 }, containerId: 'dict' },
-        { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
+        {
+          id: 'linear',
+          moduleType: 'Linear',
+          attributeName: 'linear',
+          params: { in_features: 64, out_features: 32 },
+          containerId: 'dict',
+          containerOrder: 0,
+        },
+        { id: 'relu', moduleType: 'ReLU', attributeName: 'relu', params: { inplace: true } },
       ],
-      [{ id: 'edge-1', sourceId: 'dict', targetId: 'output' }],
+      [{ id: 'edge-1', sourceId: 'dict', targetId: 'relu' }],
     );
 
     expect(validateGraphForCompilation(graph)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: 'non-callable-container', nodeId: 'dict' }),
-        expect.objectContaining({ code: 'missing-inputs', nodeId: 'linear' }),
       ]),
     );
   });
@@ -168,7 +187,6 @@ describe('validateGraphForCompilation', () => {
   it('accepts sequential children without manual graph edges', () => {
     const graph = createGraph(
       [
-        { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 64]' } },
         { id: 'seq', moduleType: 'Sequential', attributeName: 'seq', params: {} },
         {
           id: 'linear',
@@ -178,12 +196,11 @@ describe('validateGraphForCompilation', () => {
           containerId: 'seq',
           containerOrder: 0,
         },
-        { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
       ],
-      [
-        { id: 'edge-1', sourceId: 'input', targetId: 'seq' },
-        { id: 'edge-2', sourceId: 'seq', targetId: 'output' },
-      ],
+      [],
+      {
+        seq: { argumentName: 'image', shape: '[B, 64]' },
+      },
     );
 
     expect(validateGraphForCompilation(graph)).toEqual([]);

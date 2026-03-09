@@ -1,5 +1,10 @@
 import type { ModuleType, LayerParams } from '../layers';
 
+export interface ModelInputBinding {
+  argumentName: string;
+  shape: string;
+}
+
 export interface GraphPosition {
   x: number;
   y: number;
@@ -38,6 +43,7 @@ export interface GraphEdge {
 
 export interface GraphModel {
   modelName: string;
+  inputsByNodeId: Record<string, ModelInputBinding>;
   nodes: GraphNode[];
   edges: GraphEdge[];
 }

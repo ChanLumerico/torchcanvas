@@ -10,6 +10,7 @@ import Toolbar from '../components/workspace/Toolbar';
 import { TORCHCANVAS_FIT_VIEW_EVENT } from '../components/workspace/workspaceEvents';
 import {
   TORCHCANVAS_AUTOSAVE_KEY,
+  TORCHCANVAS_LEGACY_AUTOSAVE_KEY,
   createProjectFileName,
   isProjectContentEmpty,
   parseProjectFile,
@@ -112,14 +113,22 @@ export default function Workspace({ onExitWorkspace }: { onExitWorkspace: () => 
     }
 
     const rawAutosave = window.localStorage.getItem(TORCHCANVAS_AUTOSAVE_KEY);
-    if (!rawAutosave) {
+    const rawLegacyAutosave = window.localStorage.getItem(TORCHCANVAS_LEGACY_AUTOSAVE_KEY);
+    if (!rawAutosave && !rawLegacyAutosave) {
       return;
     }
 
     try {
-      const project = parseProjectFile(rawAutosave);
+      if (!rawAutosave && rawLegacyAutosave) {
+        throw new Error(
+          'A legacy TorchCanvas autosave was found, but it uses removed Input/Output nodes and cannot be restored.',
+        );
+      }
+
+      const project = parseProjectFile(rawAutosave ?? rawLegacyAutosave ?? '');
       if (isProjectContentEmpty(project.graph, project.layout)) {
         window.localStorage.removeItem(TORCHCANVAS_AUTOSAVE_KEY);
+        window.localStorage.removeItem(TORCHCANVAS_LEGACY_AUTOSAVE_KEY);
         return;
       }
 
@@ -135,7 +144,13 @@ export default function Workspace({ onExitWorkspace }: { onExitWorkspace: () => 
       replaceWorkspace(project.graph, projectToGraphLayoutState(project));
       dispatchFitView();
     } catch {
+      if (rawLegacyAutosave) {
+        window.alert(
+          'A legacy TorchCanvas autosave was found, but it uses removed Input/Output nodes and cannot be restored.',
+        );
+      }
       window.localStorage.removeItem(TORCHCANVAS_AUTOSAVE_KEY);
+      window.localStorage.removeItem(TORCHCANVAS_LEGACY_AUTOSAVE_KEY);
     }
   }, [dispatchFitView, graph, persistedLayout, replaceWorkspace]);
 

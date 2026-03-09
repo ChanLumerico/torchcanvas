@@ -3,19 +3,57 @@ import { describe, expect, it } from 'vitest';
 import type { GraphModel } from '../domain/graph/types';
 import { inferGraphNodeMeta } from './shapeInference';
 
-function createGraph(nodes: GraphModel['nodes'], edges: GraphModel['edges']): GraphModel {
+function createGraph(
+  nodes: GraphModel['nodes'],
+  edges: GraphModel['edges'],
+  inputsByNodeId: GraphModel['inputsByNodeId'],
+): GraphModel {
   return {
     modelName: 'ShapeInferenceModel',
+    inputsByNodeId,
     nodes,
     edges,
   };
 }
 
 describe('inferGraphNodeMeta', () => {
-  it('marks sequential containers and their children as connected from external container edges', () => {
+  it('uses root input bindings as the starting shapes', () => {
     const graph = createGraph(
       [
-        { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 32]' } },
+        {
+          id: 'linear',
+          moduleType: 'Linear',
+          attributeName: 'linear',
+          params: { in_features: 32, out_features: 16 },
+        },
+        {
+          id: 'relu',
+          moduleType: 'ReLU',
+          attributeName: 'relu',
+          params: { inplace: true },
+        },
+      ],
+      [{ id: 'edge-1', sourceId: 'linear', targetId: 'relu' }],
+      {
+        linear: { argumentName: 'image', shape: '[B, 32]' },
+      },
+    );
+
+    const metaByNodeId = inferGraphNodeMeta(graph);
+
+    expect(metaByNodeId.linear.outputShape).toBe('[B, 16]');
+    expect(metaByNodeId.relu.outputShape).toBe('[B, 16]');
+  });
+
+  it('marks sequential containers and their children as connected from external edges', () => {
+    const graph = createGraph(
+      [
+        {
+          id: 'stem',
+          moduleType: 'Linear',
+          attributeName: 'stem',
+          params: { in_features: 32, out_features: 32 },
+        },
         { id: 'seq', moduleType: 'Sequential', attributeName: 'encoder', params: {} },
         {
           id: 'linear',
@@ -33,12 +71,11 @@ describe('inferGraphNodeMeta', () => {
           containerId: 'seq',
           containerOrder: 1,
         },
-        { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
       ],
-      [
-        { id: 'edge-1', sourceId: 'input', targetId: 'seq' },
-        { id: 'edge-2', sourceId: 'seq', targetId: 'output' },
-      ],
+      [{ id: 'edge-1', sourceId: 'stem', targetId: 'seq' }],
+      {
+        stem: { argumentName: 'image', shape: '[B, 32]' },
+      },
     );
 
     const metaByNodeId = inferGraphNodeMeta(graph);
@@ -53,7 +90,6 @@ describe('inferGraphNodeMeta', () => {
   it('propagates shapes through nested sequential containers', () => {
     const graph = createGraph(
       [
-        { id: 'input', moduleType: 'Input', attributeName: 'input', params: { shape: '[B, 32]' } },
         { id: 'outer', moduleType: 'Sequential', attributeName: 'outer', params: {} },
         {
           id: 'inner',
@@ -79,19 +115,46 @@ describe('inferGraphNodeMeta', () => {
           containerId: 'outer',
           containerOrder: 1,
         },
-        { id: 'output', moduleType: 'Output', attributeName: 'output', params: {} },
       ],
-      [
-        { id: 'edge-1', sourceId: 'input', targetId: 'outer' },
-        { id: 'edge-2', sourceId: 'outer', targetId: 'output' },
-      ],
+      [],
+      {
+        outer: { argumentName: 'image', shape: '[B, 32]' },
+      },
     );
 
     const metaByNodeId = inferGraphNodeMeta(graph);
 
+    expect(metaByNodeId.outer.outputShape).toBe('[B, 16]');
     expect(metaByNodeId.inner.outputShape).toBe('[B, 16]');
     expect(metaByNodeId.linear.outputShape).toBe('[B, 16]');
     expect(metaByNodeId.relu.outputShape).toBe('[B, 16]');
-    expect(metaByNodeId.inner.connected).toBe(true);
+  });
+
+  it('leaves downstream shapes unknown when a root shape is missing', () => {
+    const graph = createGraph(
+      [
+        {
+          id: 'linear',
+          moduleType: 'Linear',
+          attributeName: 'linear',
+          params: { in_features: 32, out_features: 16 },
+        },
+        {
+          id: 'relu',
+          moduleType: 'ReLU',
+          attributeName: 'relu',
+          params: { inplace: true },
+        },
+      ],
+      [{ id: 'edge-1', sourceId: 'linear', targetId: 'relu' }],
+      {
+        linear: { argumentName: 'image', shape: '' },
+      },
+    );
+
+    const metaByNodeId = inferGraphNodeMeta(graph);
+
+    expect(metaByNodeId.linear.outputShape).toBeUndefined();
+    expect(metaByNodeId.relu.outputShape).toBeUndefined();
   });
 });

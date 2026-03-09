@@ -7,6 +7,7 @@ describe('reactFlowAdapter', () => {
   it('renders sequential derived edges as straight vertical read-only edges using the container color', () => {
     const graph: GraphModel = {
       modelName: 'AdapterGraph',
+      inputsByNodeId: {},
       nodes: [
         { id: 'seq', moduleType: 'Sequential', attributeName: 'encoder', params: {} },
         {

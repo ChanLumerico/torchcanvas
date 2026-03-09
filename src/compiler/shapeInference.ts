@@ -1,4 +1,5 @@
 import type { GraphModel, GraphNodePresentationMeta } from '../domain/graph/types';
+import { BoundaryResolver } from '../domain/graph/BoundaryResolver';
 import { buildGraphIndex, getOrderedContainerChildren } from '../domain/graph/utils';
 import { getLayerDefinition } from '../domain/layers';
 import { getNodeBehavior } from '../domain/nodes';
@@ -54,6 +55,9 @@ function markImplicitContainerDescendantsConnected(
 
 export function inferGraphNodeMeta(graph: GraphModel): Record<string, GraphNodePresentationMeta> {
   const index = buildGraphIndex(graph);
+  const rootIds = new Set(
+    new BoundaryResolver(graph).getExecutableBoundaries().roots.map((node) => node.id),
+  );
   const metaByNodeId = Object.fromEntries(
     graph.nodes.map((node) => [
       node.id,
@@ -77,24 +81,26 @@ export function inferGraphNodeMeta(graph: GraphModel): Record<string, GraphNodeP
     }
 
     try {
-      if (node.moduleType === 'Input') {
-        metaByNodeId[node.id].outputShape =
-          typeof node.params.shape === 'string' && node.params.shape.length > 0
-            ? node.params.shape
-            : '[B, C, H, W]';
-        return;
-      }
-
       const sources = index.reverseList.get(node.id) ?? [];
-      if (sources.length === 0) {
+      const rootInputShape =
+        sources.length === 0 && rootIds.has(node.id)
+          ? graph.inputsByNodeId[node.id]?.shape.trim()
+          : null;
+
+      if (sources.length === 0 && !rootInputShape) {
         return;
       }
 
-      const inputShapes = sources
-        .map((sourceId) => metaByNodeId[sourceId]?.outputShape)
-        .filter((shape): shape is string => typeof shape === 'string');
+      const inputShapes: string[] =
+        sources.length === 0
+          ? rootInputShape
+            ? [rootInputShape]
+            : []
+          : sources
+              .map((sourceId) => metaByNodeId[sourceId]?.outputShape)
+              .filter((shape): shape is string => typeof shape === 'string');
 
-      if (inputShapes.length !== sources.length) {
+      if (sources.length > 0 && inputShapes.length !== sources.length) {
         return;
       }
 

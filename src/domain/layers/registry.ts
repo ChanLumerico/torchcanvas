@@ -2,7 +2,6 @@ export type LayerParamValue = boolean | number | string;
 export type LayerParams = Record<string, LayerParamValue>;
 
 export type LayerCategory =
-  | 'Data'
   | 'Convolutional'
   | 'Linear'
   | 'Activations'
@@ -11,7 +10,7 @@ export type LayerCategory =
   | 'Utility'
   | 'Containers';
 
-export type LayerKind = 'data' | 'module' | 'container';
+export type LayerKind = 'module' | 'container';
 export type ParamKind = 'boolean' | 'number' | 'string' | 'literal';
 export type InternalStateCategory = 'parameter' | 'buffer';
 
@@ -109,24 +108,6 @@ function createLayer(
 }
 
 const registry = {
-  Input: createLayer({
-    category: 'Data',
-    kind: 'data',
-    color: '#10B981',
-    defaultParams: { shape: '[B, 3, 224, 224]' },
-    docsPath: null,
-    paramSpecs: { shape: literalParam },
-    quickAdd: true,
-  }),
-  Output: createLayer({
-    category: 'Data',
-    kind: 'data',
-    color: '#F43F5E',
-    defaultParams: {},
-    docsPath: null,
-    paramSpecs: {},
-    quickAdd: true,
-  }),
   Conv1d: createLayer({
     category: 'Convolutional',
     kind: 'module',
@@ -697,7 +678,6 @@ export interface LayerEntry {
 }
 
 const categoryOrder: LayerCategory[] = [
-  'Data',
   'Convolutional',
   'Linear',
   'Activations',

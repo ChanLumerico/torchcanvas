@@ -30,8 +30,6 @@ export interface ConnectedStateContext {
 
 export type ContainerCompilerKind = 'standard' | 'sequential' | 'module-list' | 'module-dict';
 
-const UNBOUNDED_INPUTS = Number.POSITIVE_INFINITY;
-
 export abstract class AbstractNodeBehavior {
   readonly type: ModuleType;
 
@@ -146,46 +144,6 @@ export class StandardLayerNodeBehavior extends AbstractNodeBehavior {
     }
 
     return super.getConnectionPolicy();
-  }
-}
-
-export class InputNodeBehavior extends AbstractNodeBehavior {
-  override isCallable(): boolean {
-    return false;
-  }
-
-  override canBeNestedIn(): boolean {
-    return false;
-  }
-
-  override getConnectionPolicy(): ConnectionPolicy {
-    return {
-      minIncomingEdges: 0,
-      maxIncomingEdges: 0,
-      canSourceConnections: true,
-      canTargetConnections: false,
-      allowDirectChildConnections: true,
-    };
-  }
-}
-
-export class OutputNodeBehavior extends AbstractNodeBehavior {
-  override isCallable(): boolean {
-    return false;
-  }
-
-  override canBeNestedIn(): boolean {
-    return false;
-  }
-
-  override getConnectionPolicy(): ConnectionPolicy {
-    return {
-      minIncomingEdges: 1,
-      maxIncomingEdges: UNBOUNDED_INPUTS,
-      canSourceConnections: false,
-      canTargetConnections: true,
-      allowDirectChildConnections: true,
-    };
   }
 }
 
@@ -344,10 +302,6 @@ export class NodeBehaviorFactory {
 
   private createBehavior(type: ModuleType): AbstractNodeBehavior {
     switch (type) {
-      case 'Input':
-        return new InputNodeBehavior(type);
-      case 'Output':
-        return new OutputNodeBehavior(type);
       case 'Sequential':
         return new SequentialContainerBehavior(type);
       case 'ModuleList':

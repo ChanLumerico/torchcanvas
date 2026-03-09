@@ -10,8 +10,7 @@ import { CONTAINER_LAYOUT } from '../../domain/nodes';
 import { useWorkspaceStore } from '../../store/workspaceStore';
 
 function getNodeColor(type: ModuleType, connected: boolean | undefined): string {
-  const alwaysColored = type === 'Input' || type === 'Output';
-  if (!connected && !alwaysColored) {
+  if (!connected) {
     return '#4B5563';
   }
   return getLayerColor(type);
@@ -25,7 +24,18 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
-  const { type, params, connected, shapeError, compact, hideHandles, pulseChild } = data;
+  const {
+    type,
+    params,
+    connected,
+    shapeError,
+    compact,
+    hideHandles,
+    pulseChild,
+    previewShifted,
+    previewGhost,
+    dragSourceHidden,
+  } = data;
   const [hovered, setHovered] = useState(false);
   const deleteNodeById = useWorkspaceStore((state) => state.deleteNodeById);
   const isSequentialCompact = compact && data.parentContainerType === 'Sequential';
@@ -43,6 +53,9 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
         data-compact-node="true"
         data-parent-container={data.parentContainerType ?? 'none'}
         data-pulse-child={pulseChild ? 'true' : 'false'}
+        data-preview-shifted={previewShifted ? 'true' : 'false'}
+        data-preview-ghost={previewGhost ? 'true' : 'false'}
+        data-drag-source-hidden={dragSourceHidden ? 'true' : 'false'}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{
@@ -53,17 +66,32 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
           color: textColor,
           boxShadow: selected
             ? `0 0 18px -4px ${hexToRgba(accentColor, 0.35)}, 0 0 0 1px ${hexToRgba(accentColor, 0.55)}`
-            : `0 4px 16px ${hexToRgba('#000000', 0.25)}`,
+            : previewShifted
+              ? `0 10px 22px ${hexToRgba(accentColor, 0.12)}, 0 6px 18px ${hexToRgba('#000000', 0.22)}`
+              : `0 4px 16px ${hexToRgba('#000000', 0.25)}`,
           position: 'relative',
           width: '100%',
           minWidth: '100%',
           maxWidth: '100%',
           height: isSequentialCompact ? CONTAINER_LAYOUT.childHeight : 50,
           borderRadius: isSequentialCompact ? 10 : 14,
+          opacity: dragSourceHidden ? 0.16 : previewGhost ? 0.62 : 1,
+          transform: dragSourceHidden
+            ? 'scale(0.96)'
+            : previewGhost
+              ? 'scale(0.982)'
+              : previewShifted
+                ? 'scale(1.012)'
+                : 'scale(1)',
+          transition:
+            'transform 280ms cubic-bezier(0.22, 1.12, 0.36, 1), opacity 220ms ease, box-shadow 220ms ease, background-color 220ms ease',
         }}
         className={clsx(
           'w-full border backdrop-blur-md transition-all duration-200 px-4 flex items-center justify-between gap-3',
           pulseChild && 'container-chip-enter',
+          previewShifted && 'container-chip-shifted',
+          previewGhost && 'container-chip-ghost',
+          dragSourceHidden && 'container-chip-drag-source-hidden',
         )}
       >
         <button
@@ -122,13 +150,13 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
               type="target"
               position={Position.Left}
               style={{ background: '#0f0f0f', borderColor: accentColor }}
-              className="!w-2.5 !h-2.5 !border"
+              className="!w-3 !h-3 !border"
             />
             <Handle
               type="source"
               position={Position.Right}
               style={{ background: '#0f0f0f', borderColor: accentColor }}
-              className="!w-2.5 !h-2.5 !border"
+              className="!w-3 !h-3 !border"
             />
           </>
         )}
@@ -210,29 +238,25 @@ function ModuleNode({ data, selected, id }: NodeProps<ModuleData>) {
         </div>
       )}
 
-      {!connected && type !== 'Input' && type !== 'Output' && (
+      {!connected && (
         <div className="px-3 pb-2 text-[9px] text-white/25 text-center font-mono">
           unconnected
         </div>
       )}
 
-      {type !== 'Input' && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          style={{ background: '#0f0f0f', borderColor: accentColor }}
-          className="w-3 h-3 !border-2"
-        />
-      )}
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ background: '#0f0f0f', borderColor: accentColor }}
+        className="w-3.5 h-3.5 !border-2"
+      />
 
-      {type !== 'Output' && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          style={{ background: '#0f0f0f', borderColor: accentColor }}
-          className="w-3 h-3 !border-2"
-        />
-      )}
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ background: '#0f0f0f', borderColor: accentColor }}
+        className="w-3.5 h-3.5 !border-2"
+      />
     </div>
   );
 }

@@ -1,15 +1,16 @@
-import type { GraphModel, GraphNode } from '../domain/graph/types';
+import type { GraphModel, GraphNode, ModelInputBinding } from '../domain/graph/types';
+import { BoundaryResolver } from '../domain/graph/BoundaryResolver';
 import { buildGraphIndex, getContainerChildren } from '../domain/graph/utils';
 import { validateGraphForCompilation, type GraphValidationIssue } from '../domain/graph/validation';
 import { getLayerDefinition } from '../domain/layers';
 import { getNodeBehavior } from '../domain/nodes';
 import { getParamSpec, sanitizePythonIdentifier, serializePythonValue } from './pythonSerializer';
 
-interface InputBinding {
+interface RootBinding {
   signature: string;
   fallbackExpression: string;
   variableByNodeId: Map<string, string>;
-  orderedInputNodes: GraphNode[];
+  orderedRootNodes: GraphNode[];
 }
 
 function ensureUniqueIdentifier(base: string, usedIdentifiers: Set<string>): string {
@@ -28,54 +29,53 @@ function ensureUniqueIdentifier(base: string, usedIdentifiers: Set<string>): str
   return uniqueIdentifier;
 }
 
-function getOrderedInputNodes(graph: GraphModel, topologicalOrder?: string[]): GraphNode[] {
-  if (!topologicalOrder) {
-    return graph.nodes.filter((node) => node.moduleType === 'Input');
-  }
-
-  const nodeMap = new Map(graph.nodes.map((node) => [node.id, node] as const));
-  return topologicalOrder
-    .map((nodeId) => nodeMap.get(nodeId))
-    .filter((node): node is GraphNode => node?.moduleType === 'Input');
-}
-
-function createInputBinding(graph: GraphModel, topologicalOrder?: string[]): InputBinding {
-  const inputNodes = getOrderedInputNodes(graph, topologicalOrder);
+function createRootBinding(graph: GraphModel): RootBinding {
+  const rootNodes = new BoundaryResolver(graph).getExecutableBoundaries().roots;
   const variableByNodeId = new Map<string, string>();
 
-  if (inputNodes.length === 0) {
-    return {
-      signature: '*args',
-      fallbackExpression: 'args[0]',
-      variableByNodeId,
-      orderedInputNodes: [],
-    };
-  }
-
-  if (inputNodes.length === 1) {
-    variableByNodeId.set(inputNodes[0].id, 'x');
+  if (rootNodes.length === 0) {
     return {
       signature: 'x',
       fallbackExpression: 'x',
       variableByNodeId,
-      orderedInputNodes: inputNodes,
+      orderedRootNodes: [],
+    };
+  }
+
+  if (rootNodes.length === 1) {
+    const rootNode = rootNodes[0];
+    const binding = graph.inputsByNodeId[rootNode.id];
+    const argumentName = sanitizePythonIdentifier(
+      binding?.argumentName || rootNode.attributeName,
+      'x',
+    );
+    variableByNodeId.set(rootNode.id, argumentName);
+    return {
+      signature: argumentName,
+      fallbackExpression: argumentName,
+      variableByNodeId,
+      orderedRootNodes: rootNodes,
     };
   }
 
   const usedIdentifiers = new Set<string>();
-  const args = inputNodes.map((node, index) => {
-    const baseName = sanitizePythonIdentifier(node.attributeName, `input_${index + 1}`);
+  const args = rootNodes.map((node, index) => {
+    const binding = graph.inputsByNodeId[node.id];
+    const baseName = sanitizePythonIdentifier(
+      binding?.argumentName || node.attributeName,
+      `input_${index + 1}`,
+    );
     const argumentName = ensureUniqueIdentifier(baseName, usedIdentifiers);
     variableByNodeId.set(node.id, argumentName);
     return argumentName;
   });
 
   return {
-    signature: args.join(', '),
-    fallbackExpression: args[0],
-    variableByNodeId,
-    orderedInputNodes: inputNodes,
-  };
+      signature: args.join(', '),
+      fallbackExpression: args[0],
+      variableByNodeId,
+      orderedRootNodes: rootNodes,
+    };
 }
 
 function createLayerInitExpression(node: GraphNode): string {
@@ -205,11 +205,8 @@ function parseShapeTokens(shape: string): string[] {
     .filter(Boolean);
 }
 
-function createDummyInputExpression(node: GraphNode): string {
-  const shape =
-    typeof node.params.shape === 'string' && node.params.shape.length > 0
-      ? node.params.shape
-      : '[B, 3, 224, 224]';
+function createDummyInputExpression(binding: ModelInputBinding): string {
+  const shape = binding.shape.length > 0 ? binding.shape : '[B, 3, 224, 224]';
 
   const dimensions = parseShapeTokens(shape).map((token, index) => {
     const normalized = token.toLowerCase();
@@ -228,13 +225,13 @@ function createDummyInputExpression(node: GraphNode): string {
   return `torch.randn(${resolvedDimensions}).to(device)`;
 }
 
-function createModelCallExpression(inputBinding: InputBinding): string {
-  if (inputBinding.orderedInputNodes.length === 0) {
-    return 'model(inputs)';
+function createModelCallExpression(rootBinding: RootBinding): string {
+  if (rootBinding.orderedRootNodes.length === 0) {
+    return 'model(x)';
   }
 
-  const args = inputBinding.orderedInputNodes
-    .map((node) => inputBinding.variableByNodeId.get(node.id))
+  const args = rootBinding.orderedRootNodes
+    .map((node) => rootBinding.variableByNodeId.get(node.id))
     .filter((value): value is string => typeof value === 'string');
 
   return `model(${args.join(', ')})`;
@@ -279,6 +276,26 @@ ${summary}
 raise RuntimeError("TorchCanvas graph validation failed. Fix the graph before exporting code.")`;
 }
 
+function createMissingInputShapeTrainCode(
+  modelName: string,
+  missingBindings: Array<{ node: GraphNode; binding: ModelInputBinding | undefined }>,
+): string {
+  const summary = missingBindings
+    .map(({ node }) => `# - ${node.moduleType} \`${node.attributeName}\` is missing an input shape.`)
+    .join('\n');
+
+  return `import torch
+import torch.nn as nn
+import torch.optim as optim
+from generated_model import ${modelName}
+
+# TorchCanvas could not generate a training template because one or more root modules
+# do not have input shapes configured in the Model Properties panel.
+${summary}
+
+raise RuntimeError("Configure root input shapes in the Inspector before exporting train.py.")`;
+}
+
 export function generatePytorchCode(graph: GraphModel): string {
   const safeModelName = sanitizePythonIdentifier(graph.modelName, 'GeneratedModel');
 
@@ -301,7 +318,9 @@ class ${safeModelName}(nn.Module):
 
   const index = buildGraphIndex(graph);
   const containerChildren = getContainerChildren(graph);
-  const inputBinding = createInputBinding(graph, index.topologicalOrder);
+  const boundaryResolver = new BoundaryResolver(graph);
+  const boundaries = boundaryResolver.getExecutableBoundaries();
+  const rootBinding = createRootBinding(graph);
 
   let initCode = '';
   let forwardCode = '';
@@ -309,7 +328,7 @@ class ${safeModelName}(nn.Module):
   let variableCounter = 1;
 
   const nodeToLayerName = new Map<string, string>();
-  const nodeToVarName = new Map(inputBinding.variableByNodeId);
+  const nodeToVarName = new Map(rootBinding.variableByNodeId);
   const nodeInitExpression = new Map<string, string>();
   const usedLayerIdentifiers = new Set<string>();
   const processedImplicitContainers = new Set<string>();
@@ -318,10 +337,6 @@ class ${safeModelName}(nn.Module):
   index.topologicalOrder.forEach((nodeId) => {
     const node = index.nodeMap.get(nodeId);
     if (!node) {
-      return;
-    }
-
-    if (node.moduleType === 'Input' || node.moduleType === 'Output') {
       return;
     }
 
@@ -351,7 +366,7 @@ class ${safeModelName}(nn.Module):
     initCode += `        ${layerName} = ${layerExpression}\n`;
   });
 
-  let fallbackReturnVariable = inputBinding.fallbackExpression;
+  let fallbackReturnVariable = rootBinding.fallbackExpression;
 
   index.topologicalOrder.forEach((nodeId) => {
     const node = index.nodeMap.get(nodeId);
@@ -359,29 +374,12 @@ class ${safeModelName}(nn.Module):
       return;
     }
 
-    if (node.moduleType === 'Input') {
-      return;
-    }
-
-    if (node.moduleType === 'Output') {
-      const sources = index.reverseList.get(node.id) ?? [];
-      const resolvedSourceVars = sources
-        .map((sourceId) => nodeToVarName.get(sourceId))
-        .filter((value): value is string => typeof value === 'string');
-
-      if (resolvedSourceVars.length === 1) {
-        outputVariables.push(resolvedSourceVars[0]);
-      } else if (resolvedSourceVars.length > 1) {
-        outputVariables.push(`(${resolvedSourceVars.join(', ')})`);
-      }
-
-      return;
-    }
-
     const sources = index.reverseList.get(node.id) ?? [];
     const sourceVars = sources
       .map((sourceId) => nodeToVarName.get(sourceId))
       .filter((value): value is string => typeof value === 'string');
+    const fallbackExpression =
+      rootBinding.variableByNodeId.get(node.id) ?? rootBinding.fallbackExpression;
 
     if (node.containerId) {
       const parentNode = index.nodeMap.get(node.containerId);
@@ -403,7 +401,7 @@ class ${safeModelName}(nn.Module):
           node,
           layerName,
           sourceVars,
-          inputBinding.fallbackExpression,
+          fallbackExpression,
         );
         forwardCode += `        ${outputVar} = ${expression}\n`;
 
@@ -420,7 +418,7 @@ class ${safeModelName}(nn.Module):
           node,
           layerName,
           sourceVars,
-          inputBinding.fallbackExpression,
+          fallbackExpression,
         );
         forwardCode += `        ${outputVar} = ${expression}\n`;
 
@@ -444,7 +442,7 @@ class ${safeModelName}(nn.Module):
           node,
           layerName,
           sourceVars,
-          inputBinding.fallbackExpression,
+          fallbackExpression,
         );
         forwardCode += `        ${outputVar} = ${expression}\n`;
         nodeToVarName.set(node.id, outputVar);
@@ -467,11 +465,18 @@ class ${safeModelName}(nn.Module):
       node,
       layerName,
       sourceVars,
-      inputBinding.fallbackExpression,
+      fallbackExpression,
     );
     forwardCode += `        ${outputVar} = ${expression}\n`;
     nodeToVarName.set(node.id, outputVar);
     fallbackReturnVariable = outputVar;
+  });
+
+  boundaries.sinks.forEach((node) => {
+    const outputVariable = nodeToVarName.get(node.id);
+    if (outputVariable) {
+      outputVariables.push(outputVariable);
+    }
   });
 
   if (!initCode) {
@@ -492,7 +497,7 @@ class ${safeModelName}(nn.Module):
     def __init__(self):
         super().__init__()
 ${initCode}
-    def forward(self, ${inputBinding.signature}):
+    def forward(self, ${rootBinding.signature}):
 ${forwardCode}`;
 }
 
@@ -505,21 +510,38 @@ export function generateTrainTemplate(model: GraphModel | string = 'GeneratedMod
     return createInvalidGraphTrainCode(safeModelName, validationIssues);
   }
 
-  const inputBinding = graph ? createInputBinding(graph, buildGraphIndex(graph).topologicalOrder) : null;
+  const rootBinding = graph ? createRootBinding(graph) : null;
+  const missingRootShapes =
+    graph && rootBinding
+      ? rootBinding.orderedRootNodes
+          .map((node) => ({
+            node,
+            binding: graph.inputsByNodeId[node.id],
+          }))
+          .filter(({ binding }) => !binding || binding.shape.trim().length === 0)
+      : [];
+  if (missingRootShapes.length > 0) {
+    return createMissingInputShapeTrainCode(safeModelName, missingRootShapes);
+  }
   const dummyInputLines =
-    graph && inputBinding && inputBinding.orderedInputNodes.length > 0
-      ? inputBinding.orderedInputNodes
+    graph && rootBinding && rootBinding.orderedRootNodes.length > 0
+      ? rootBinding.orderedRootNodes
           .map((node) => {
-            const variableName = inputBinding.variableByNodeId.get(node.id);
+            const variableName = rootBinding.variableByNodeId.get(node.id);
             if (!variableName) {
               return null;
             }
 
-            return `${variableName} = ${createDummyInputExpression(node)}`;
+            return `${variableName} = ${createDummyInputExpression(
+              graph.inputsByNodeId[node.id] ?? {
+                argumentName: variableName,
+                shape: '',
+              },
+            )}`;
           })
           .filter((line): line is string => typeof line === 'string')
-      : ['inputs = torch.randn(32, 3, 224, 224).to(device)'];
-  const modelCall = inputBinding ? createModelCallExpression(inputBinding) : 'model(inputs)';
+      : ['x = torch.randn(32, 3, 224, 224).to(device)'];
+  const modelCall = rootBinding ? createModelCallExpression(rootBinding) : 'model(x)';
 
   return `import torch
 import torch.nn as nn

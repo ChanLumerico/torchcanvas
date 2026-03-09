@@ -3,37 +3,39 @@ import type {
   GraphModel,
   GraphNodeDimensions,
   GraphPosition,
+  ModelInputBinding,
 } from '../graph/types';
 import { createEmptyGraphLayout, normalizeContainerOrders } from '../graph/utils';
 import { layerRegistry, type LayerParamValue } from '../layers';
 import { getNodeBehavior } from '../nodes';
 
 export const TORCHCANVAS_PROJECT_APP = 'torchcanvas';
-export const TORCHCANVAS_PROJECT_SCHEMA_VERSION = 1;
-export const TORCHCANVAS_AUTOSAVE_KEY = 'torchcanvas:autosave:v1';
+export const TORCHCANVAS_PROJECT_SCHEMA_VERSION = 2;
+export const TORCHCANVAS_AUTOSAVE_KEY = 'torchcanvas:autosave:v2';
+export const TORCHCANVAS_LEGACY_AUTOSAVE_KEY = 'torchcanvas:autosave:v1';
 
 export interface PersistedProjectLayout {
   positionsById: Record<string, GraphPosition>;
   dimensionsById?: Record<string, GraphNodeDimensions>;
 }
 
-export interface TorchCanvasProjectLayoutV1 {
+export interface TorchCanvasProjectLayoutV2 {
   positionsById: Record<string, GraphPosition>;
   dimensionsById?: Record<string, GraphNodeDimensions>;
 }
 
-export interface TorchCanvasProjectV1 {
+export interface TorchCanvasProjectV2 {
   app: typeof TORCHCANVAS_PROJECT_APP;
   schemaVersion: typeof TORCHCANVAS_PROJECT_SCHEMA_VERSION;
   savedAt: string;
   graph: GraphModel;
-  layout: TorchCanvasProjectLayoutV1;
+  layout: TorchCanvasProjectLayoutV2;
 }
 
 export interface ProjectFileValidationResult {
   isValid: boolean;
   errors: string[];
-  project?: TorchCanvasProjectV1;
+  project?: TorchCanvasProjectV2;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -73,11 +75,28 @@ function sortRecord<T>(
   );
 }
 
+function sortInputsByNodeId(
+  inputsByNodeId: Record<string, ModelInputBinding>,
+): Record<string, ModelInputBinding> {
+  return Object.fromEntries(
+    Object.keys(inputsByNodeId)
+      .sort()
+      .map((nodeId) => [
+        nodeId,
+        {
+          argumentName: inputsByNodeId[nodeId].argumentName,
+          shape: inputsByNodeId[nodeId].shape,
+        },
+      ]),
+  );
+}
+
 function normalizeGraph(graph: GraphModel): GraphModel {
   const normalizedGraph = normalizeContainerOrders(graph);
 
   return {
     modelName: normalizedGraph.modelName,
+    inputsByNodeId: sortInputsByNodeId(normalizedGraph.inputsByNodeId ?? {}),
     nodes: normalizedGraph.nodes.map((node) => ({
       id: node.id,
       moduleType: node.moduleType,
@@ -94,14 +113,14 @@ function normalizeGraph(graph: GraphModel): GraphModel {
   };
 }
 
-function normalizePersistedLayout(layout: PersistedProjectLayout): Required<TorchCanvasProjectLayoutV1> {
+function normalizePersistedLayout(layout: PersistedProjectLayout): Required<TorchCanvasProjectLayoutV2> {
   return {
     positionsById: sortRecord(layout.positionsById, normalizePosition),
     dimensionsById: sortRecord(layout.dimensionsById ?? {}, normalizeDimensions),
   };
 }
 
-function cloneProject(project: TorchCanvasProjectV1): TorchCanvasProjectV1 {
+function cloneProject(project: TorchCanvasProjectV2): TorchCanvasProjectV2 {
   return structuredClone(project);
 }
 
@@ -125,6 +144,7 @@ export function isProjectContentEmpty(
 ): boolean {
   return (
     graph.modelName === 'GeneratedModel' &&
+    Object.keys(graph.inputsByNodeId ?? {}).length === 0 &&
     graph.nodes.length === 0 &&
     graph.edges.length === 0 &&
     Object.keys(layout.positionsById).length === 0 &&
@@ -141,9 +161,9 @@ export function createProjectFileName(modelName: string): string {
 export function serializeProject(
   graph: GraphModel,
   layout: PersistedProjectLayout,
-): TorchCanvasProjectV1 {
+): TorchCanvasProjectV2 {
   const normalizedLayout = normalizePersistedLayout(layout);
-  const project: TorchCanvasProjectV1 = {
+  const project: TorchCanvasProjectV2 = {
     app: TORCHCANVAS_PROJECT_APP,
     schemaVersion: TORCHCANVAS_PROJECT_SCHEMA_VERSION,
     savedAt: new Date().toISOString(),
@@ -229,6 +249,38 @@ function validateDimensions(
   return isValid;
 }
 
+function createLegacyBoundaryError(): string {
+  return 'This project uses removed Input/Output nodes and is not supported in TorchCanvas v2.';
+}
+
+function validateInputBindings(
+  value: unknown,
+  path: string,
+  errors: string[],
+): value is Record<string, ModelInputBinding> {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an object.`);
+    return false;
+  }
+
+  Object.entries(value).forEach(([nodeId, entry]) => {
+    if (!isRecord(entry)) {
+      errors.push(`${path}.${nodeId} must be an object.`);
+      return;
+    }
+
+    if (typeof entry.argumentName !== 'string' || entry.argumentName.length === 0) {
+      errors.push(`${path}.${nodeId}.argumentName must be a non-empty string.`);
+    }
+
+    if (typeof entry.shape !== 'string') {
+      errors.push(`${path}.${nodeId}.shape must be a string.`);
+    }
+  });
+
+  return true;
+}
+
 export function validateProjectFile(project: unknown): ProjectFileValidationResult {
   const errors: string[] = [];
 
@@ -244,7 +296,16 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
   }
 
   if (project.schemaVersion !== TORCHCANVAS_PROJECT_SCHEMA_VERSION) {
-    errors.push(`Unsupported project schema version: ${String(project.schemaVersion)}.`);
+    const rawGraph = isRecord(project.graph) ? project.graph : null;
+    const rawNodes = rawGraph && Array.isArray(rawGraph.nodes) ? rawGraph.nodes : [];
+    const usesLegacyBoundaries = rawNodes.some(
+      (entry) => isRecord(entry) && (entry.moduleType === 'Input' || entry.moduleType === 'Output'),
+    );
+    errors.push(
+      usesLegacyBoundaries
+        ? createLegacyBoundaryError()
+        : `Unsupported project schema version: ${String(project.schemaVersion)}.`,
+    );
   }
 
   if (typeof project.savedAt !== 'string' || project.savedAt.length === 0) {
@@ -278,6 +339,10 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
     errors.push('graph.edges must be an array.');
   }
 
+  if (!validateInputBindings(rawGraph.inputsByNodeId, 'graph.inputsByNodeId', errors)) {
+    return { isValid: false, errors };
+  }
+
   if (!isRecord(rawLayout.positionsById)) {
     errors.push('layout.positionsById must be an object.');
   }
@@ -294,6 +359,7 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
   const edgeIds = new Set<string>();
   const graph: GraphModel = {
     modelName: rawGraph.modelName as string,
+    inputsByNodeId: {},
     nodes: [],
     edges: [],
   };
@@ -318,7 +384,9 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
     }
     nodeIds.add(id);
 
-    if (typeof moduleType !== 'string' || !(moduleType in layerRegistry)) {
+    if (moduleType === 'Input' || moduleType === 'Output') {
+      errors.push(createLegacyBoundaryError());
+    } else if (typeof moduleType !== 'string' || !(moduleType in layerRegistry)) {
       errors.push(`${path}.moduleType is not a supported TorchCanvas layer.`);
     }
 
@@ -395,6 +463,7 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
 
   const positionsById: Record<string, GraphPosition> = {};
   const dimensionsById: Record<string, GraphNodeDimensions> = {};
+  const inputBindings = rawGraph.inputsByNodeId as Record<string, ModelInputBinding>;
   const positionEntries = rawLayout.positionsById as Record<string, unknown>;
   const dimensionsEntries = (rawLayout.dimensionsById ?? {}) as Record<string, unknown>;
 
@@ -447,6 +516,18 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
     }
   });
 
+  Object.entries(inputBindings).forEach(([nodeId, binding]) => {
+    if (!nodeIds.has(nodeId)) {
+      errors.push(`graph.inputsByNodeId.${nodeId} references an unknown node.`);
+      return;
+    }
+
+    graph.inputsByNodeId[nodeId] = {
+      argumentName: binding.argumentName,
+      shape: binding.shape,
+    };
+  });
+
   graph.edges.forEach((edge) => {
     if (!nodeIds.has(edge.sourceId) || !nodeIds.has(edge.targetId)) {
       errors.push(`Edge ${edge.id} references a missing source or target node.`);
@@ -457,7 +538,7 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
     return { isValid: false, errors };
   }
 
-  const normalizedProject: TorchCanvasProjectV1 = {
+  const normalizedProject: TorchCanvasProjectV2 = {
     app: TORCHCANVAS_PROJECT_APP,
     schemaVersion: TORCHCANVAS_PROJECT_SCHEMA_VERSION,
     savedAt: project.savedAt as string,
@@ -475,7 +556,7 @@ export function validateProjectFile(project: unknown): ProjectFileValidationResu
   };
 }
 
-export function parseProjectFile(text: string): TorchCanvasProjectV1 {
+export function parseProjectFile(text: string): TorchCanvasProjectV2 {
   let parsed: unknown;
 
   try {
@@ -492,7 +573,7 @@ export function parseProjectFile(text: string): TorchCanvasProjectV1 {
   return cloneProject(result.project);
 }
 
-export function projectToGraphLayoutState(project: TorchCanvasProjectV1): GraphLayoutState {
+export function projectToGraphLayoutState(project: TorchCanvasProjectV2): GraphLayoutState {
   const emptyLayout = createEmptyGraphLayout();
 
   return {

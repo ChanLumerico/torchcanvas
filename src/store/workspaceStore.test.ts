@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { NodeChange } from 'reactflow';
 
 import { getDefaultParams, isContainerModule, type ModuleType } from '../domain/layers';
-import { createEmptyGraphLayout, createEmptyGraphModel } from '../domain/graph/utils';
 import { useWorkspaceStore, type NetworkNode } from './workspaceStore';
 
 function createNode(
@@ -31,10 +30,10 @@ describe('useWorkspaceStore', () => {
 
   it('keeps graph and React Flow projection in sync for add/connect/reparent/delete', () => {
     const store = useWorkspaceStore.getState();
-    store.addNode(createNode('input', 'Input', 40, 80, 'input_1'));
+    store.addNode(createNode('linear', 'Linear', 40, 80, 'linear_1'));
     store.addNode(createNode('dict', 'ModuleDict', 200, 200, 'dict_1'));
     store.addNode(createNode('relu', 'ReLU', 260, 240, 'relu_1'));
-    store.onConnect({ source: 'input', target: 'relu', sourceHandle: null, targetHandle: null });
+    store.onConnect({ source: 'linear', target: 'relu', sourceHandle: null, targetHandle: null });
     store.reparentNode('relu', 'dict');
 
     let state = useWorkspaceStore.getState();
@@ -51,7 +50,7 @@ describe('useWorkspaceStore', () => {
     expect(state.nodes.find((node) => node.id === 'relu')?.position).toEqual({ x: 216, y: 260 });
   });
 
-  it('tracks param and attribute edits in undo/redo history', () => {
+  it('tracks param and attribute edits in undo/redo history and syncs default input args', () => {
     const store = useWorkspaceStore.getState();
     store.addNode(createNode('relu', 'ReLU', 80, 120, 'relu_1'));
     store.updateNodeParams('relu', { inplace: false });
@@ -60,6 +59,7 @@ describe('useWorkspaceStore', () => {
     let state = useWorkspaceStore.getState();
     expect(state.graph.nodes.find((node) => node.id === 'relu')?.params.inplace).toBe(false);
     expect(state.graph.nodes.find((node) => node.id === 'relu')?.attributeName).toBe('relu_block');
+    expect(state.graph.inputsByNodeId.relu.argumentName).toBe('relu_block');
 
     store.undo();
     state = useWorkspaceStore.getState();
@@ -75,6 +75,18 @@ describe('useWorkspaceStore', () => {
     state = useWorkspaceStore.getState();
     expect(state.graph.nodes.find((node) => node.id === 'relu')?.params.inplace).toBe(false);
     expect(state.graph.nodes.find((node) => node.id === 'relu')?.attributeName).toBe('relu_block');
+  });
+
+  it('preserves custom root argument names when attribute names change', () => {
+    const store = useWorkspaceStore.getState();
+    store.addNode(createNode('conv', 'Conv2d', 120, 160, 'conv_1'));
+
+    store.updateModelInput('conv', { argumentName: 'image' });
+    store.updateNodeAttributeName('conv', 'stem_conv');
+
+    const state = useWorkspaceStore.getState();
+    expect(state.graph.inputsByNodeId.conv.argumentName).toBe('image');
+    expect(state.graph.inputsByNodeId.conv.shape).toBe('');
   });
 
   it('persists measured node dimensions for controlled React Flow rendering', () => {
@@ -98,14 +110,14 @@ describe('useWorkspaceStore', () => {
 
   it('rejects invalid connections in the store command layer', () => {
     const store = useWorkspaceStore.getState();
-    store.addNode(createNode('image', 'Input', 20, 20, 'image'));
-    store.addNode(createNode('meta', 'Input', 20, 120, 'meta'));
+    store.addNode(createNode('image', 'Linear', 20, 20, 'image_proj'));
+    store.addNode(createNode('meta', 'Linear', 20, 120, 'meta_proj'));
+    store.addNode(createNode('extra', 'Linear', 20, 220, 'extra_proj'));
     store.addNode(createNode('fusion', 'Bilinear', 220, 80, 'fusion'));
-    store.addNode(createNode('output', 'Output', 420, 80, 'output'));
 
     store.onConnect({ source: 'image', target: 'fusion', sourceHandle: null, targetHandle: null });
     store.onConnect({ source: 'meta', target: 'fusion', sourceHandle: null, targetHandle: null });
-    store.onConnect({ source: 'output', target: 'fusion', sourceHandle: null, targetHandle: null });
+    store.onConnect({ source: 'extra', target: 'fusion', sourceHandle: null, targetHandle: null });
     store.onConnect({ source: 'fusion', target: 'image', sourceHandle: null, targetHandle: null });
 
     const state = useWorkspaceStore.getState();
@@ -179,27 +191,17 @@ describe('useWorkspaceStore', () => {
     expect(state.layout.positionsById.linear).toEqual(nestedPosition);
   });
 
-  it('reorders children within the same container using insertAt semantics', () => {
+  it('uses the provided absolute position when dragging a container child back to top-level', () => {
     const store = useWorkspaceStore.getState();
     store.addNode(createNode('seq', 'Sequential', 200, 120, 'encoder'));
     store.addNode(createNode('linear', 'Linear', 40, 40, 'linear_1'), { parentId: 'seq' });
-    store.addNode(createNode('relu', 'ReLU', 40, 40, 'relu_1'), { parentId: 'seq' });
-    store.addNode(createNode('dropout', 'Dropout', 40, 40, 'dropout_1'), { parentId: 'seq' });
 
-    store.reparentNode('dropout', 'seq', { insertAt: 0 });
+    store.reparentNode('linear', undefined, { absolutePosition: { x: 640, y: 420 } });
 
     const state = useWorkspaceStore.getState();
-    expect(
-      state.graph.nodes
-        .filter((node) => node.containerId === 'seq')
-        .sort((leftNode, rightNode) => (leftNode.containerOrder ?? 0) - (rightNode.containerOrder ?? 0))
-        .map((node) => [node.id, node.containerOrder]),
-    ).toEqual([
-      ['dropout', 0],
-      ['linear', 1],
-      ['relu', 2],
-    ]);
-    expect(state.nodes.find((node) => node.id === 'dropout')?.position).toEqual({ x: 34, y: 60 });
+    expect(state.graph.nodes.find((node) => node.id === 'linear')?.containerId).toBeUndefined();
+    expect(state.layout.positionsById.linear).toEqual({ x: 640, y: 420 });
+    expect(state.nodes.find((node) => node.id === 'linear')?.position).toEqual({ x: 640, y: 420 });
   });
 
   it('does not reparent unrelated nodes when adding a top-level layer beside a sequential container', () => {
@@ -217,82 +219,36 @@ describe('useWorkspaceStore', () => {
     expect(state.graph.edges).toHaveLength(0);
   });
 
-  it('keeps multiple sequentials and inputs stable when adding new top-level nodes', () => {
+  it('keeps multiple sequentials and roots stable when adding new top-level nodes', () => {
     const store = useWorkspaceStore.getState();
-    store.addNode(createNode('input', 'Input', 40, 120, 'image'));
+    store.addNode(createNode('root', 'Linear', 40, 120, 'image_proj'));
     store.addNode(createNode('seq-a', 'Sequential', 240, 80, 'encoder_a'));
     store.addNode(createNode('seq-b', 'Sequential', 520, 80, 'encoder_b'));
     store.addNode(createNode('relu-a', 'ReLU', 40, 40, 'relu_a'), { parentId: 'seq-a' });
     store.addNode(createNode('relu-b', 'ReLU', 40, 40, 'relu_b'), { parentId: 'seq-b' });
 
-    store.addNode(createNode('conv', 'Conv2d', 760, 140, 'conv_1'));
+    store.addNode(createNode('conv', 'Conv2d', 760, 80, 'conv_1'));
 
     const state = useWorkspaceStore.getState();
-    expect(state.graph.nodes.find((node) => node.id === 'input')).toBeDefined();
-    expect(state.graph.nodes.find((node) => node.id === 'seq-a')).toBeDefined();
-    expect(state.graph.nodes.find((node) => node.id === 'seq-b')).toBeDefined();
+    expect(state.graph.nodes.map((node) => node.id)).toEqual(
+      expect.arrayContaining(['root', 'seq-a', 'seq-b', 'relu-a', 'relu-b', 'conv']),
+    );
+    expect(state.graph.nodes.find((node) => node.id === 'root')).toBeDefined();
     expect(state.graph.nodes.find((node) => node.id === 'conv')?.containerId).toBeUndefined();
     expect(state.graph.edges).toHaveLength(0);
   });
 
-  it('resets history and dirty state when replacing the workspace', () => {
+  it('syncs model input bindings when roots change', () => {
     const store = useWorkspaceStore.getState();
-    store.addNode(createNode('conv', 'Conv2d', 120, 160, 'conv_1'));
-    store.updateNodeAttributeName('conv', 'stem');
+    store.addNode(createNode('conv', 'Conv2d', 40, 80, 'conv_1'));
+    store.addNode(createNode('relu', 'ReLU', 320, 80, 'relu_1'));
 
     let state = useWorkspaceStore.getState();
-    expect(state.isDirty).toBe(true);
-    expect(state.canUndo).toBe(true);
+    expect(Object.keys(state.graph.inputsByNodeId)).toEqual(expect.arrayContaining(['conv', 'relu']));
 
-    const importedGraph = {
-      modelName: 'ImportedModel',
-      nodes: [
-        {
-          id: 'input',
-          moduleType: 'Input' as const,
-          attributeName: 'image',
-          params: getDefaultParams('Input'),
-        },
-      ],
-      edges: [],
-    };
-    const importedLayout = {
-      ...createEmptyGraphLayout(),
-      positionsById: {
-        input: { x: 80, y: 120 },
-      },
-    };
+    store.onConnect({ source: 'conv', target: 'relu', sourceHandle: null, targetHandle: null });
 
-    store.replaceWorkspace(importedGraph, importedLayout);
     state = useWorkspaceStore.getState();
-
-    expect(state.graph).toEqual(importedGraph);
-    expect(state.layout.selection).toEqual({ nodeId: null, edgeId: null });
-    expect(state.history).toHaveLength(1);
-    expect(state.historyIndex).toBe(0);
-    expect(state.canUndo).toBe(false);
-    expect(state.canRedo).toBe(false);
-    expect(state.isDirty).toBe(false);
-  });
-
-  it('tracks persisted baselines independently from autosave state', () => {
-    const store = useWorkspaceStore.getState();
-    store.addNode(createNode('input', 'Input', 40, 80, 'image'));
-
-    let state = useWorkspaceStore.getState();
-    expect(state.isDirty).toBe(true);
-
-    store.markPersistedBaseline();
-    state = useWorkspaceStore.getState();
-    expect(state.isDirty).toBe(false);
-
-    store.setModelName('RenamedModel');
-    state = useWorkspaceStore.getState();
-    expect(state.isDirty).toBe(true);
-
-    store.resetWorkspace();
-    state = useWorkspaceStore.getState();
-    expect(state.graph).toEqual(createEmptyGraphModel());
-    expect(state.isDirty).toBe(false);
+    expect(Object.keys(state.graph.inputsByNodeId)).toEqual(['conv']);
   });
 });

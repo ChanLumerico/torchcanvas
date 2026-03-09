@@ -23,7 +23,13 @@ import {
   graphToDerivedSequentialEdges,
   type ModuleData,
 } from '../../domain/graph/reactFlowAdapter';
-import { getContainerDropTargetAtPosition, type ContainerDropTarget } from '../../domain/graph/utils';
+import {
+  buildContainerLayoutIndex,
+  getContainerDropTargetAtPosition,
+  getOrderedContainerChildren,
+  type ContainerDropTarget,
+} from '../../domain/graph/utils';
+import { CONTAINER_LAYOUT, getNodeBehavior } from '../../domain/nodes';
 import { useWorkspaceStore, type NetworkNode } from '../../store/workspaceStore';
 import ModuleNode from './ModuleNode';
 import ContainerNode from './ContainerNode';
@@ -35,8 +41,109 @@ const nodeTypes = {
   containerNode: ContainerNode,
 };
 
+type DragOverlayState = {
+  nodeId: string;
+  nodeType: NetworkNode['type'];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+  data: ModuleData;
+};
+
 let id = 10;
 const getId = () => `dndnode_${id++}`;
+
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getPreviewColor(type: ModuleType, connected?: boolean): string {
+  if (!connected) {
+    return '#4B5563';
+  }
+
+  return getLayerColor(type);
+}
+
+function DragOverlayPreview({ overlay }: { overlay: DragOverlayState }) {
+  const accentColor = overlay.data.shapeError
+    ? '#EF4444'
+    : getPreviewColor(overlay.data.type, overlay.data.connected);
+
+  if (overlay.nodeType === 'containerNode') {
+    return (
+      <div
+        data-drag-overlay="true"
+        className="fixed pointer-events-none z-[120] rounded-xl border-2 backdrop-blur-md shadow-2xl"
+        style={{
+          left: overlay.x,
+          top: overlay.y,
+          width: overlay.width,
+          height: overlay.height,
+          borderColor: `${accentColor}C0`,
+          background:
+            `linear-gradient(180deg, ${hexToRgba(accentColor, 0.18)} 0%, rgba(10, 14, 24, 0.92) 38%, rgba(4, 8, 16, 0.92) 100%)`,
+          boxShadow: `0 18px 40px ${hexToRgba('#000000', 0.32)}, 0 0 0 1px ${hexToRgba(accentColor, 0.28)}`,
+          transform: `scale(${overlay.scale})`,
+          transformOrigin: 'top left',
+          opacity: 0.96,
+        }}
+      >
+        <div
+          className="absolute top-0 left-0 right-0 h-8 flex items-center justify-between px-3 border-b rounded-t-[10px]"
+          style={{
+            backgroundColor: `${accentColor}28`,
+            borderColor: `${accentColor}30`,
+          }}
+        >
+          <span className="text-xs font-bold tracking-wider" style={{ color: accentColor }}>
+            {overlay.data.type}
+          </span>
+          <div className="text-[10px] font-mono font-medium text-white/55 bg-black/35 px-2 py-0.5 rounded">
+            {overlay.data.attributeName}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-drag-overlay="true"
+      className="fixed pointer-events-none z-[120] border backdrop-blur-md px-4 flex items-center justify-between gap-3"
+      style={{
+        left: overlay.x,
+        top: overlay.y,
+        width: overlay.width,
+        height: overlay.height,
+        borderRadius: overlay.data.parentContainerType === 'Sequential' ? 10 : 14,
+        borderColor: accentColor,
+        background:
+          `linear-gradient(180deg, ${hexToRgba(accentColor, 0.22)} 0%, ${hexToRgba(accentColor, 0.12)} 100%)`,
+        color: accentColor,
+        boxShadow:
+          `0 18px 38px ${hexToRgba('#000000', 0.28)}, 0 0 0 1px ${hexToRgba(accentColor, 0.42)}`,
+        transform: `scale(${overlay.scale})`,
+        transformOrigin: 'top left',
+        opacity: 0.97,
+      }}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-[12px] font-bold tracking-wide truncate">{overlay.data.type}</span>
+      </div>
+      <span className="text-[11px] font-mono text-white/60 truncate">
+        {overlay.data.attributeName}
+      </span>
+    </div>
+  );
+}
 
 function CanvasInner() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
@@ -63,6 +170,9 @@ function CanvasInner() {
   const setSelectedEdge = useWorkspaceStore((state) => state.setSelectedEdge);
   const reparentNode = useWorkspaceStore((state) => state.reparentNode);
   const [containerDropTarget, setContainerDropTarget] = useState<ContainerDropTarget | null>(null);
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const [dragPreviewType, setDragPreviewType] = useState<ModuleType | null>(null);
+  const [dragOverlay, setDragOverlay] = useState<DragOverlayState | null>(null);
   const [recentContainerInsertion, setRecentContainerInsertion] = useState<{
     containerId: string;
     childId: string;
@@ -82,10 +192,187 @@ function CanvasInner() {
 
   const derivedEdges = useMemo(() => graphToDerivedSequentialEdges(graph), [graph]);
   const displayedEdges = useMemo(() => [...edges, ...derivedEdges], [derivedEdges, edges]);
+  const previewState = useMemo(() => {
+    const previewMotionByNodeId = new Map<
+      string,
+      {
+        offsetY: number;
+        shifted: boolean;
+        ghost: boolean;
+      }
+    >();
+    let previewSlot:
+      | {
+          containerId: string;
+          top: number;
+          height: number;
+          width: number;
+          left: number;
+        }
+      | null = null;
+
+    if (!dragPreviewType) {
+      return { previewMotionByNodeId, previewSlot };
+    }
+
+    const layoutIndex = buildContainerLayoutIndex(graph);
+    const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node] as const));
+    const draggingNode = draggingNodeId ? graphNodeById.get(draggingNodeId) : undefined;
+    const draggingIsContainer = isContainerModule(dragPreviewType);
+    const draggingDimensions =
+      draggingNode && draggingIsContainer
+        ? layoutIndex.dimensionsByNodeId.get(draggingNode.id)
+        : draggingNode
+          ? layoutIndex.childLayoutsByNodeId.get(draggingNode.id)?.dimensions
+          : undefined;
+    const previewHeight =
+      draggingDimensions?.height ??
+      (draggingIsContainer
+        ? getNodeBehavior(dragPreviewType).getContainerDimensions(0).height
+        : CONTAINER_LAYOUT.childHeight);
+    const previewShiftAmount = previewHeight + CONTAINER_LAYOUT.childGap;
+
+    if (draggingNode?.containerId) {
+      previewMotionByNodeId.set(draggingNode.id, {
+        offsetY: 0,
+        shifted: false,
+        ghost: true,
+      });
+    }
+
+    if (draggingNode?.containerId && containerDropTarget?.containerId !== draggingNode.containerId) {
+      const sourceChildren = getOrderedContainerChildren(graph, draggingNode.containerId);
+      const sourceIndex = sourceChildren.findIndex((childNode) => childNode.id === draggingNode.id);
+
+      sourceChildren.forEach((childNode, index) => {
+        if (index > sourceIndex) {
+          previewMotionByNodeId.set(childNode.id, {
+            offsetY: -previewShiftAmount,
+            shifted: true,
+            ghost: false,
+          });
+        }
+      });
+    }
+
+    if (!containerDropTarget) {
+      return { previewMotionByNodeId, previewSlot };
+    }
+
+    const targetContainerNode = graphNodeById.get(containerDropTarget.containerId);
+    if (!targetContainerNode) {
+      return { previewMotionByNodeId, previewSlot };
+    }
+
+    const targetBehavior = getNodeBehavior(targetContainerNode.moduleType);
+    const targetChildren = getOrderedContainerChildren(graph, containerDropTarget.containerId);
+    const sameContainerReorder = draggingNode?.containerId === containerDropTarget.containerId;
+    const filteredTargetChildren = sameContainerReorder
+      ? targetChildren.filter((childNode) => childNode.id !== draggingNodeId)
+      : targetChildren;
+    const targetChildLayouts = filteredTargetChildren
+      .map((childNode) => ({
+        node: childNode,
+        layout: layoutIndex.childLayoutsByNodeId.get(childNode.id),
+      }))
+      .filter((entry): entry is { node: (typeof filteredTargetChildren)[number]; layout: NonNullable<typeof entry.layout> } => Boolean(entry.layout));
+
+    const previewTop =
+      targetChildLayouts.length === 0
+        ? CONTAINER_LAYOUT.stackTop
+        : containerDropTarget.insertAt >= targetChildLayouts.length
+          ? targetChildLayouts[targetChildLayouts.length - 1].layout.position.y +
+            targetChildLayouts[targetChildLayouts.length - 1].layout.dimensions.height +
+            CONTAINER_LAYOUT.childGap
+          : targetChildLayouts[containerDropTarget.insertAt].layout.position.y;
+
+    const previewWidth =
+      draggingDimensions?.width ??
+      (draggingIsContainer
+        ? CONTAINER_LAYOUT.width - CONTAINER_LAYOUT.paddingX * 2
+        : targetBehavior.getChildWidth());
+    const previewLeft =
+      draggingNode && draggingNode.containerId === containerDropTarget.containerId
+        ? (layoutIndex.childLayoutsByNodeId.get(draggingNode.id)?.position.x ??
+          (draggingIsContainer ? CONTAINER_LAYOUT.paddingX : targetBehavior.getChildLeft()))
+        : draggingIsContainer
+          ? CONTAINER_LAYOUT.paddingX
+          : targetBehavior.getChildLeft();
+
+    previewSlot = {
+      containerId: containerDropTarget.containerId,
+      top: previewTop,
+      height: previewHeight,
+      width: previewWidth,
+      left: previewLeft,
+    };
+
+    if (sameContainerReorder && draggingNode) {
+      const sourceIndex = targetChildren.findIndex((childNode) => childNode.id === draggingNode.id);
+
+      targetChildren.forEach((childNode, index) => {
+        if (childNode.id === draggingNode.id) {
+          return;
+        }
+
+        let offsetY = 0;
+        if (sourceIndex < containerDropTarget.insertAt) {
+          if (index > sourceIndex && index <= containerDropTarget.insertAt) {
+            offsetY = -previewShiftAmount;
+          }
+        } else if (sourceIndex > containerDropTarget.insertAt) {
+          if (index >= containerDropTarget.insertAt && index < sourceIndex) {
+            offsetY = previewShiftAmount;
+          }
+        }
+
+        if (offsetY !== 0) {
+          previewMotionByNodeId.set(childNode.id, {
+            offsetY,
+            shifted: true,
+            ghost: false,
+          });
+        }
+      });
+
+      return { previewMotionByNodeId, previewSlot };
+    }
+
+    targetChildren.forEach((childNode, index) => {
+      if (index >= containerDropTarget.insertAt) {
+        previewMotionByNodeId.set(childNode.id, {
+          offsetY: previewShiftAmount,
+          shifted: true,
+          ghost: false,
+        });
+      }
+    });
+
+    return { previewMotionByNodeId, previewSlot };
+  }, [containerDropTarget, dragPreviewType, draggingNodeId, graph]);
   const displayedNodes = useMemo(
     () =>
       nodes.map((node) => ({
         ...node,
+        position: previewState.previewMotionByNodeId.has(node.id)
+          ? {
+              ...node.position,
+              y:
+                node.position.y +
+                (previewState.previewMotionByNodeId.get(node.id)?.offsetY ?? 0),
+            }
+          : node.position,
+        style: {
+          ...(node.style ?? {}),
+          ...(previewState.previewMotionByNodeId.has(node.id)
+            ? {
+                transition:
+                  previewState.previewMotionByNodeId.get(node.id)?.ghost
+                    ? 'box-shadow 220ms ease, opacity 220ms ease'
+                    : 'transform 300ms cubic-bezier(0.22, 1.18, 0.36, 1), box-shadow 220ms ease, opacity 220ms ease',
+              }
+            : {}),
+        },
         data: {
           ...node.data,
           isDropTarget:
@@ -94,11 +381,30 @@ function CanvasInner() {
             node.type === 'containerNode' && containerDropTarget?.containerId === node.id
               ? containerDropTarget.insertAt
               : null,
+          dropPreviewTop:
+            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+              ? previewState.previewSlot.top
+              : null,
+          dropPreviewHeight:
+            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+              ? previewState.previewSlot.height
+              : null,
+          dropPreviewWidth:
+            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+              ? previewState.previewSlot.width
+              : null,
+          dropPreviewLeft:
+            node.type === 'containerNode' && previewState.previewSlot?.containerId === node.id
+              ? previewState.previewSlot.left
+            : null,
           pulseContainer: recentContainerInsertion?.containerId === node.id,
           pulseChild: recentContainerInsertion?.childId === node.id,
+          previewShifted: previewState.previewMotionByNodeId.get(node.id)?.shifted,
+          previewGhost: previewState.previewMotionByNodeId.get(node.id)?.ghost,
+          dragSourceHidden: dragOverlay?.nodeId === node.id,
         },
       })),
-    [containerDropTarget, nodes, recentContainerInsertion],
+    [containerDropTarget, dragOverlay?.nodeId, nodes, previewState.previewMotionByNodeId, previewState.previewSlot, recentContainerInsertion],
   );
 
   const getFlowPosition = useCallback(
@@ -208,6 +514,7 @@ function CanvasInner() {
       event.dataTransfer.dropEffect = 'move';
 
       const type = event.dataTransfer.getData('application/reactflow') as ModuleType;
+      setDragPreviewType(type || null);
       setContainerDropTarget(resolveContainerDropTarget(event.clientX, event.clientY, type));
     },
     [resolveContainerDropTarget],
@@ -217,16 +524,90 @@ function CanvasInner() {
     const nextTarget = event.relatedTarget;
     if (!nextTarget || !reactFlowWrapper.current?.contains(nextTarget as Node)) {
       setContainerDropTarget(null);
+      setDragPreviewType(null);
     }
   }, []);
 
+  const updateDragOverlay = useCallback(
+    (event: ReactMouseEvent, node: NetworkNode) => {
+      if (!node.parentNode) {
+        setDragOverlay(null);
+        return;
+      }
+
+      setDragOverlay((currentOverlay) => {
+        const nodeElement =
+          reactFlowWrapper.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${node.id}"]`);
+        const nodeRect = nodeElement?.getBoundingClientRect();
+        const baseWidth =
+          nodeElement?.offsetWidth ??
+          node.width ??
+          currentOverlay?.width ??
+          220;
+        const baseHeight =
+          nodeElement?.offsetHeight ??
+          node.height ??
+          currentOverlay?.height ??
+          CONTAINER_LAYOUT.childHeight;
+        const scale =
+          nodeRect && baseWidth > 0
+            ? nodeRect.width / baseWidth
+            : reactFlow.getViewport().zoom || 1;
+
+        if (currentOverlay?.nodeId === node.id) {
+          return {
+            ...currentOverlay,
+            x: event.clientX - currentOverlay.offsetX,
+            y: event.clientY - currentOverlay.offsetY,
+            width: baseWidth,
+            height: baseHeight,
+            scale,
+            data: node.data,
+          };
+        }
+
+        const offsetX = nodeRect ? event.clientX - nodeRect.left : baseWidth / 2;
+        const offsetY = nodeRect ? event.clientY - nodeRect.top : baseHeight / 2;
+
+        return {
+          nodeId: node.id,
+          nodeType: node.type,
+          x: event.clientX - offsetX,
+          y: event.clientY - offsetY,
+          width: baseWidth,
+          height: baseHeight,
+          offsetX,
+          offsetY,
+          scale,
+          data: node.data,
+        };
+      });
+    },
+    [reactFlow],
+  );
+
   const onNodeDrag = useCallback(
     (event: ReactMouseEvent, node: NetworkNode) => {
+      setDraggingNodeId(node.id);
+      setDragPreviewType(node.data.type);
+      updateDragOverlay(event, node);
       setContainerDropTarget(
         resolveContainerDropTarget(event.clientX, event.clientY, node.data.type, node.id),
       );
     },
-    [resolveContainerDropTarget],
+    [resolveContainerDropTarget, updateDragOverlay],
+  );
+
+  const onNodeDragStart = useCallback(
+    (event: ReactMouseEvent, node: NetworkNode) => {
+      setDraggingNodeId(node.id);
+      setDragPreviewType(node.data.type);
+      updateDragOverlay(event, node);
+      setContainerDropTarget(
+        resolveContainerDropTarget(event.clientX, event.clientY, node.data.type, node.id),
+      );
+    },
+    [resolveContainerDropTarget, updateDragOverlay],
   );
 
   const onNodeDragStop = useCallback(
@@ -239,12 +620,24 @@ function CanvasInner() {
         reparentNode(node.id, target.containerId, { insertAt: target.insertAt });
         triggerContainerInsertionPulse(target.containerId, node.id);
       } else if (node.parentNode) {
-        reparentNode(node.id, undefined);
+        const currentOverlay =
+          dragOverlay?.nodeId === node.id
+            ? dragOverlay
+            : null;
+        const absolutePosition = getFlowPosition(
+          event.clientX - (currentOverlay?.offsetX ?? 0),
+          event.clientY - (currentOverlay?.offsetY ?? 0),
+        );
+
+        reparentNode(node.id, undefined, { absolutePosition });
       }
 
       setContainerDropTarget(null);
+      setDraggingNodeId(null);
+      setDragPreviewType(null);
+      setDragOverlay(null);
     },
-    [containerDropTarget, reparentNode, resolveContainerDropTarget, triggerContainerInsertionPulse],
+    [containerDropTarget, dragOverlay, getFlowPosition, reparentNode, resolveContainerDropTarget, triggerContainerInsertionPulse],
   );
 
   const createWorkspaceNode = useCallback(
@@ -269,6 +662,8 @@ function CanvasInner() {
       const type = event.dataTransfer.getData('application/reactflow') as ModuleType;
       if (!type) {
         setContainerDropTarget(null);
+        setDragPreviewType(null);
+        setDragOverlay(null);
         return;
       }
 
@@ -289,6 +684,8 @@ function CanvasInner() {
         triggerContainerInsertionPulse(target.containerId, node.id);
       }
       setContainerDropTarget(null);
+      setDragPreviewType(null);
+      setDragOverlay(null);
       revealNode(position.x, position.y);
     },
     [
@@ -398,6 +795,7 @@ function CanvasInner() {
         isValidConnection={isValidConnection}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
+        onNodeDragStart={onNodeDragStart}
         onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
@@ -429,8 +827,7 @@ function CanvasInner() {
               return '#EE4C2C';
             }
 
-            const alwaysColored = type === 'Input' || type === 'Output';
-            if (!connected && !alwaysColored) {
+            if (!connected) {
               return '#4B5563';
             }
 
@@ -438,6 +835,8 @@ function CanvasInner() {
           }}
         />
       </ReactFlow>
+
+      {dragOverlay && <DragOverlayPreview overlay={dragOverlay} />}
     </div>
   );
 }

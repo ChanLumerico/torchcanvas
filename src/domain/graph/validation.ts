@@ -1,4 +1,5 @@
 import type { GraphModel, GraphNode } from './types';
+import { BoundaryResolver } from './BoundaryResolver';
 import { buildGraphIndex, getContainerChildren } from './utils';
 import { getNodeBehavior } from '../nodes';
 
@@ -50,10 +51,6 @@ function getEndpointRejectionCode(node: GraphNode, direction: 'source' | 'target
       return null;
     }
 
-    if (node.moduleType === 'Output') {
-      return 'output-source';
-    }
-
     return getNodeBehavior(node.moduleType).isContainer()
       ? 'non-callable-container'
       : 'invalid-source';
@@ -61,10 +58,6 @@ function getEndpointRejectionCode(node: GraphNode, direction: 'source' | 'target
 
   if (policy.canTargetConnections) {
     return null;
-  }
-
-  if (node.moduleType === 'Input') {
-    return 'input-target';
   }
 
   return getNodeBehavior(node.moduleType).isContainer()
@@ -164,6 +157,14 @@ export function validateGraphForCompilation(graph: GraphModel): GraphValidationI
   const issues: GraphValidationIssue[] = [];
   const index = buildGraphIndex(graph);
   const containerChildren = getContainerChildren(graph);
+  const boundaryResolver = new BoundaryResolver(graph);
+  const rootIds = new Set(
+    boundaryResolver
+      .getExecutableBoundaries()
+      .roots
+      .filter((node) => getNodeBehavior(node.moduleType).getConnectionPolicy().minIncomingEdges <= 1)
+      .map((node) => node.id),
+  );
 
   graph.edges.forEach((edge) => {
     const sourceNode = index.nodeMap.get(edge.sourceId);
@@ -237,7 +238,8 @@ export function validateGraphForCompilation(graph: GraphModel): GraphValidationI
     }
 
     const nestedInImplicitContainer = Boolean(parentBehavior?.usesImplicitChildExecution());
-    if (!nestedInImplicitContainer && incomingCount < policy.minIncomingEdges) {
+    const isBoundaryRoot = rootIds.has(node.id) && incomingCount === 0;
+    if (!nestedInImplicitContainer && !isBoundaryRoot && incomingCount < policy.minIncomingEdges) {
       issues.push({
         code: 'missing-inputs',
         nodeId: node.id,
